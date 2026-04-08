@@ -1,10 +1,9 @@
 import json
-from pprint import pprint
-
 import zmq
 from datetime import datetime
 from telethon import TelegramClient, events
 from signal_parser import signal_parser
+from pprint import pprint
 
 with open('keys_urls.json', 'r') as f:
     config = json.load(f)
@@ -13,13 +12,20 @@ API_ID = config["telegram_api_id"]
 API_HASH = config["telegram_api_hash"]
 
 # A csatornák listája (username vagy numerikus ID)
-traderz_gold_wip = -3496306840
+traderz_gold_wip = -1003496306840
 ann_zerofloat = "@livetradeann"
 technical_pips = "@Technicalpipshuk50"
 gold_trader_mo = "@gold_Trader_mo_gtmofx_Official"
 gold_signal_vip = "@Gold_Signal_Vip_Official"
 mychal_fx = "@CHEMPION_HUB"
-CHANNELS = [traderz_gold_wip, ann_zerofloat, technical_pips, gold_trader_mo, gold_signal_vip, mychal_fx]
+CHANNELS = [
+    traderz_gold_wip,
+    ann_zerofloat,
+    technical_pips,
+    gold_trader_mo,
+    gold_signal_vip,
+    mychal_fx
+]
 
 client = TelegramClient('session_neve', API_ID, API_HASH)
 
@@ -40,11 +46,11 @@ def send_position(event, edited):
 
     if len(signal_dict) == 0:
         log_print("wrong message\n", "telegram.log")
-        log_print(event.raw_text)
+        # log_print(event.raw_text)
     else:
         log_print("message ok\n", "telegram.log")
-        log_print(event.raw_text)
-        for tp_idx, tp in enumerate(signal_dict["sl_list"]):
+        # log_print(event.raw_text)
+        for tp_idx, tp in enumerate(signal_dict["tp_list"]):
             position_dict = {
                 "epic": "GOLD",
                 "direction": signal_dict["direction"],
@@ -58,6 +64,7 @@ def send_position(event, edited):
                 "send_date": datetime.now().strftime('%y:%m:%d:%H:%M:%S'),
                 "edited": edited,
                 "chat_id": event.chat.id,
+                "chat_name": event.chat.title,
             }
             socket.send_pyobj(position_dict)
 
