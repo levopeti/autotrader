@@ -3,9 +3,12 @@ import http.client
 import json
 from pprint import pprint
 
-API_KEY = ""
-LOGIN = ""
-PASSWORD = ""
+with open('keys_urls.json', 'r') as f:
+    config = json.load(f)
+
+API_KEY = config["capital_api_key"]
+LOGIN = config["capital_login"]
+PASSWORD = config["capital_pw"]
 LIVE_URL = "api-capital.backend-capital.com"
 DEMO_URL = "demo-api-capital.backend-capital.com"
 
@@ -134,7 +137,7 @@ def preferences(_xt, _cst):
     pprint(json.loads(data.decode("utf-8")))
 
 
-def activity_history(_xt, _cst):
+def activity_history():
     _from = None
     _to = None
     last_period = 10
@@ -145,16 +148,21 @@ def activity_history(_xt, _cst):
     conn = http.client.HTTPSConnection(DEMO_URL)
     payload = ''
     headers = {
-        'X-SECURITY-TOKEN': _xt,
-        'CST': _cst
+        'X-SECURITY-TOKEN': tokens.X_SECURITY_TOKEN,
+        'CST': tokens.CST
     }
-    conn.request("GET",
-                 "/api/v1/history/activity?from={}&to={}&lastPeriod={}&detailed={}&dealId={}&filter={}".format(_from,
+    #?from={}&to={}&lastPeriod={}&detailed={}&dealId={}&filter={}
+    """
+    to=2026-04-10T16:10:05
+    .format(_from,
                                                                                                                _to,
                                                                                                                last_period,
                                                                                                                detailed,
                                                                                                                dealId,
                                                                                                                filter),
+    """
+    conn.request("GET",
+                 "/api/v1/history/activity?epic=GOLD&detailed=true&to=2026-04-10T16:10:05",
                  payload, headers)
     res = conn.getresponse()
     data = res.read()
@@ -179,12 +187,12 @@ def create_position(position_info):
     data = res.read()
     return json.loads(data.decode("utf-8"))
 
-def get_position(_xt, _cst, _deal_id):
+def get_position(_deal_id):
     conn = http.client.HTTPSConnection(DEMO_URL)
     payload = ''
     headers = {
-        'X-SECURITY-TOKEN': _xt,
-        'CST': _cst
+        'X-SECURITY-TOKEN': tokens.X_SECURITY_TOKEN,
+        'CST': tokens.CST
     }
     conn.request("GET", "/api/v1/positions/{}".format(_deal_id), payload, headers)
     res = conn.getresponse()
@@ -220,12 +228,12 @@ def close_position(_xt, _cst, _deal_id):
     print(data.decode("utf-8"))
 
 
-def all_positions(_xt, _cst):
+def all_positions():
     conn = http.client.HTTPSConnection(DEMO_URL)
     payload = ''
     headers = {
-        'X-SECURITY-TOKEN': _xt,
-        'CST': _cst
+        'X-SECURITY-TOKEN': tokens.X_SECURITY_TOKEN,
+        'CST': tokens.CST
     }
     conn.request("GET", "/api/v1/positions", payload, headers)
     res = conn.getresponse()
@@ -288,9 +296,9 @@ if __name__ == '__main__':
     # pprint(header_dict)
     # ping_server(header_dict["X-SECURITY-TOKEN"], header_dict["CST"])
     # all_account(header_dict["X-SECURITY-TOKEN"], header_dict["CST"])
-    # activity_history(header_dict["X-SECURITY-TOKEN"], header_dict["CST"])
+    activity_history()
     # create_position(header_dict["X-SECURITY-TOKEN"], header_dict["CST"], position)
     # get_position(header_dict["X-SECURITY-TOKEN"], header_dict["CST"], deal_id)
     # close_position(header_dict["X-SECURITY-TOKEN"], header_dict["CST"], deal_id)
-    # all_positions(header_dict["X-SECURITY-TOKEN"], header_dict["CST"])
-    pprint(get_prices())
+    # all_positions()
+    # pprint(get_position("00601567-0055-311e-0000-0000848473ec"))

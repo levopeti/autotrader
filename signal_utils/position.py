@@ -1,112 +1,48 @@
 import asyncio
-import json
 import aiohttp
-import websockets
-import zmq
-import zmq.asyncio
+import logging
 from datetime import datetime, timezone
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
-import logging
-import csv
-import os
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
-with open('keys_urls.json', 'r') as f:
-    config = json.load(f)
-
-API_KEY    = config["capital_api_key"]
-IDENTIFIER = config["capital_login"]
-PASSWORD   = config["capital_pw"]
-DEMO_MODE  = True
-
-BASE_URL = (
-    "https://demo-api-capital.backend-capital.com"
-    if DEMO_MODE else
-    "https://api-capital.backend-capital.com"
-)
-WS_URL        = "wss://api-streaming-capital.backend-capital.com/connect"
-EPIC          = "GOLD"
-ZMQ_PULL_ADDR = "tcp://localhost:5555"
-
-MAX_OPEN_POSITIONS = 3
 POSITION_TIMEOUT_SEC = 15 * 60
-POLL_INTERVAL_SEC    = 5 * 60    # REST poll + CSV írás gyakorisága
-CSV_FILE             = "positions.csv"
+TP_DIST_MAX = 50
+SL_DIST_MAX = 50
 
-CSV_FIELDS = [
-    "log_time",          # Mikor lett a CSV sor írva
-    "deal_id",
-    "deal_reference",
-    "epic",
-    "direction",
-    "size",
-    "state",
-    # Konfig
-    "zone_low",
-    "zone_high",
-    "tp_configured",
-    "sl_configured",
-    # Élő adatok a REST-ből
-    "open_level",        # Tényleges nyitóár
-    "current_level",     # Jelenlegi ár (REST poll)
-    "limit_level",       # TP szint az API-ban
-    "stop_level",        # SL szint az API-ban
-    "profit_loss",       # Aktuális P&L
-    "realised_pnl",     # Végleges P&L dollárban (zárásnál confirm-ből)
-    "currency",
-    "created_date",      # Mikor nyílt a pozíció
-    "close_level",       # Záróár (ha zárva)
-    "close_reason",      # LIMIT / STOP / MANUAL / EXPIRED / stb.
-    # Időbélyegek
-    "registered_at",     # Mikor adták hozzá a managerhez
-    "opened_at",         # Mikor küldte el az API-nak
-    "closed_at",         # Mikor zárult
-    "expired_at",        # Mikor járt le (timeout)
-    "last_poll_at",      # Utolsó REST frissítés
-    "raw_text",
-    "send_date",
-    "edited",
-    "chat_id",
-    "chat_name",
-    "tp_idx",
-    # Hiba
-    "error_msg",
-]
-
-
-# ─── ENUMS / DATACLASSES ─────────────────────────────────────────────────────
 
 class Direction(str, Enum):
-    BUY  = "BUY"
+    BUY = "BUY"
     SELL = "SELL"
 
+
 class PositionState(str, Enum):
-    WAITING  = "WAITING"
-    OPENING  = "OPENING"
-    OPEN     = "OPEN"
-    FILLED   = "FILLED"    # TP vagy SL elérve
+    WAITING = "WAITING"
+    OPENING = "OPENING"
+    OPEN = "OPEN"
+    FILLED = "FILLED"  # TP vagy SL elérve
     CANCELED = "CANCELED"  # Manuális
-    EXPIRED  = "EXPIRED"   # 10 perces timeout
-    ERROR    = "ERROR"
+    EXPIRED = "EXPIRED"  # 10 perces timeout
+    ERROR = "ERROR"
+
 
 @dataclass
 class PositionConfig:
-    epic:      str
+    epic: str
     direction: Direction
-    size:      float
-    zone_low:  float
+    size: float
+    zone_low: float
     zone_high: float
-    tp:        float
-    sl:        float
-    tp_idx:    int
+    tp: float
+    sl: float
+    tp_idx: int
     send_date: str
-    edited:    bool
-    chat_id:   int
-    raw_text:  str
+    edited: bool
+    chat_id: int
+    raw_text: str
     chat_name: str
 
 
@@ -115,17 +51,15 @@ class PositionConfig:
 class Position:
     def __init__(self, config: PositionConfig, base_url: str,
                  cst: str, token: str, manager: "PositionManager"):
-        self.config     = config
-        self.base_url   = base_url
-        self.cst        = cst
-        self.token      = token
-        self.state      = PositionState.WAITING
+        self.config   = config
+        self.base_url = base_url
+        self.cst      = cst
+        self.token    = token
+        self._manager = manager
+        self.state    = PositionState.WAITING
 
-        # Azonosítók
-        self.deal_id:    Optional[str] = None
-        self.deal_ref:   Optional[str] = None
-
-        # Áradatok
+        self.deal_id:       Optional[str]   = None
+        self.deal_ref:      Optional[str]   = None
         self.open_level:    Optional[float] = None
         self.current_level: Optional[float] = None
         self.limit_level:   Optional[float] = None
@@ -133,13 +67,10 @@ class Position:
         self.close_level:   Optional[float] = None
         self.close_reason:  Optional[str]   = None
         self.profit_loss:   Optional[float] = None
+        self.realised_pnl:  Optional[float] = None
         self.currency:      Optional[str]   = None
         self.created_date:  Optional[str]   = None
 
-        self.realised_pnl: Optional[float] = None  # Záráskori végleges P&L (dollár)
-        self.profit_loss: Optional[float] = None  # Nyitott pozíció unrealised P&L
-
-        # Időbélyegek
         self.registered_at = datetime.now(timezone.utc)
         self.opened_at:   Optional[datetime] = None
         self.closed_at:   Optional[datetime] = None
@@ -149,9 +80,18 @@ class Position:
         self.error_msg: Optional[str] = None
 
         self._queue: asyncio.Queue[tuple[float, float]] = asyncio.Queue()
-        self._manager = manager
 
     # ── Nyilvános ─────────────────────────────────────────────────────────────
+
+    def init_check(self):
+        tp_dist = abs(self.config.tp - (self.config.zone_low + self.config.zone_low) / 2)
+        sl_dict = abs(self.config.sl - (self.config.zone_low + self.config.zone_low) / 2)
+
+        if tp_dist > TP_DIST_MAX or sl_dict > SL_DIST_MAX:
+            self.state = PositionState.ERROR
+            self.error_msg = "tp/sl dist error"
+            logger.error("tp/sl dist error")
+            self._manager.csv_update_terminal(self)
 
     def start(self) -> asyncio.Task:
         return asyncio.create_task(self._monitor_loop())
@@ -162,7 +102,8 @@ class Position:
 
     def cancel(self) -> bool:
         if self.state == PositionState.WAITING:
-            self.state = PositionState.CANCELED
+            self.state        = PositionState.CANCELED
+            self.realised_pnl = 0.0
             return True
         return False
 
@@ -173,12 +114,10 @@ class Position:
         )
 
     def to_csv_row(self) -> dict:
-        """Az összes mező egy CSV sorba."""
-        now = datetime.now(timezone.utc).isoformat()
         return {
-            "log_time":       now,
-            "deal_id":        self.deal_id        or "",
-            "deal_reference": self.deal_ref       or "",
+            "log_time":       datetime.now(timezone.utc).isoformat(),
+            "deal_id":        self.deal_id or "",
+            "deal_reference": self.deal_ref or "",
             "epic":           self.config.epic,
             "direction":      self.config.direction.value,
             "size":           self.config.size,
@@ -187,20 +126,20 @@ class Position:
             "zone_high":      self.config.zone_high,
             "tp_configured":  self.config.tp,
             "sl_configured":  self.config.sl,
-            "open_level":     self.open_level     or "",
-            "current_level":  self.current_level  or "",
-            "limit_level":    self.limit_level     or "",
-            "stop_level":     self.stop_level      or "",
-            "profit_loss":    self.profit_loss     or "",
-            "realised_pnl":   self.realised_pnl if self.realised_pnl is not None else "",
-            "currency":       self.currency        or "",
-            "created_date":   self.created_date    or "",
-            "close_level":    self.close_level     or "",
-            "close_reason":   self.close_reason    or "",
+            "open_level":     self.open_level    if self.open_level    is not None else "",
+            "current_level":  self.current_level if self.current_level is not None else "",
+            "limit_level":    self.limit_level   if self.limit_level   is not None else "",
+            "stop_level":     self.stop_level    if self.stop_level    is not None else "",
+            "profit_loss":    self.profit_loss   if self.profit_loss   is not None else "",
+            "realised_pnl":   self.realised_pnl  if self.realised_pnl  is not None else "",
+            "currency":       self.currency      or "",
+            "created_date":   self.created_date  or "",
+            "close_level":    self.close_level   if self.close_level   is not None else "",
+            "close_reason":   self.close_reason  or "",
             "registered_at":  self.registered_at.isoformat(),
-            "opened_at":      self.opened_at.isoformat()   if self.opened_at   else "",
-            "closed_at":      self.closed_at.isoformat()   if self.closed_at   else "",
-            "expired_at":     self.expired_at.isoformat()  if self.expired_at  else "",
+            "opened_at":      self.opened_at.isoformat()    if self.opened_at    else "",
+            "closed_at":      self.closed_at.isoformat()    if self.closed_at    else "",
+            "expired_at":     self.expired_at.isoformat()   if self.expired_at   else "",
             "last_poll_at":   self.last_poll_at.isoformat() if self.last_poll_at else "",
             "error_msg":      self.error_msg or "",
             "raw_text":       self.config.raw_text,
@@ -208,8 +147,7 @@ class Position:
             "edited":         self.config.edited,
             "chat_id":        self.config.chat_id,
             "chat_name":      self.config.chat_name,
-            "tp_idx":         self.config.tp_idx
-
+            "tp_idx":         self.config.tp_idx,
         }
 
     def __repr__(self):
@@ -218,14 +156,18 @@ class Position:
     # ── Belső logika ──────────────────────────────────────────────────────────
 
     async def _monitor_loop(self) -> None:
-        deadline = self.registered_at.timestamp() + POSITION_TIMEOUT_SEC
+        deadline  = self.registered_at.timestamp() + POSITION_TIMEOUT_SEC
+        log_once  = False
         try:
             while self.state == PositionState.WAITING:
                 remaining = deadline - datetime.now(timezone.utc).timestamp()
                 if remaining <= 0:
-                    self.state      = PositionState.EXPIRED
-                    self.expired_at = datetime.now(timezone.utc)
-                    logger.info("[POS] ⏰ Lejárt: %s", self)
+                    self.state        = PositionState.EXPIRED
+                    self.expired_at   = datetime.now(timezone.utc)
+                    self.realised_pnl = 0.0
+                    logger.info("[POS] Lejárt: %s", self)
+                    # ── LEJÁRAT: sor frissítése ────────────────────────────
+                    self._manager.csv_update_terminal(self)
                     break
 
                 try:
@@ -237,14 +179,17 @@ class Position:
 
                 trigger = ask if self.config.direction == Direction.BUY else bid
                 if self.config.zone_low <= trigger <= self.config.zone_high:
-                    if not self._manager.can_open():
-                        # Limit teljesült — logol és tovább vár
-                        logger.info(
-                            "[POS] ⏸ Zone elérve, de limit telt (%d/%d) — várakozás...",
-                            self._manager.open_count(), self._manager.max_open,
-                        )
-                        continue   # ← nem nyit, következő tick-re vár
-                    logger.info("[POS] Zone elérve %.5f → nyitás...", trigger)
+                    if not self._manager.can_open(self.config.chat_id):
+                        if not log_once:
+                            logger.info(
+                                "[POS][%s] ⏸ Zone elérve, limit betelt (%d/%d) — várakozás...",
+                                self.deal_id,
+                                self._manager.open_count(),
+                                self._manager.max_open,
+                            )
+                            log_once = True
+                        continue
+                    logger.info("[POS][%s] Zone elérve %.5f → nyitás...", self.deal_id, trigger)
                     await self._open_position()
                     break
         except asyncio.CancelledError:
@@ -284,312 +229,108 @@ class Position:
             self.state     = PositionState.ERROR
             self.error_msg = str(e)
             logger.error("❌ Nyitási hiba: %s", e)
+            self._manager.csv_update_terminal(self)
 
     async def _fetch_confirm(self) -> None:
-        """deal_id + nyitóár lekérése a confirms végpontról."""
         await asyncio.sleep(1)
         headers = {"CST": self.cst, "X-SECURITY-TOKEN": self.token}
-        try:
-            async with aiohttp.ClientSession() as s:
-                async with s.get(
-                    f"{self.base_url}/api/v1/confirms/{self.deal_ref}",
-                    headers=headers
-                ) as r:
-                    data = await r.json()
-                    self.deal_id    = data.get("dealId")
-                    self.open_level = data.get("level")
-                    self.limit_level = data.get("limitLevel")
-                    self.stop_level  = data.get("stopLevel")
-                    logger.info("[POS] Confirm | dealId:%s | nyitóár:%s",
-                                self.deal_id, self.open_level)
-        except Exception as e:
-            logger.warning("[POS] Confirm hiba: %s", e)
+        for attempt in range(5):
+            try:
+                async with aiohttp.ClientSession() as s:
+                    async with s.get(
+                        f"{self.base_url}/api/v1/confirms/{self.deal_ref}",
+                        headers=headers
+                    ) as r:
+                        data = await r.json()
+                        self.deal_id = self.deal_id or data.get("dealId")
+                        level = data.get("level")
+                        if level is not None:
+                            self.open_level  = self.open_level or level
+                            self.limit_level = data.get("limitLevel")
+                            self.stop_level  = data.get("stopLevel")
+                            logger.info("[POS] Confirm | dealId:%s | nyitóár:%.5f",
+                                        self.deal_id, self.open_level)
+                            return
+                        await asyncio.sleep(2 ** attempt)
+            except Exception as e:
+                logger.warning("[POS] Confirm hiba (%d. kísérlet): %s", attempt + 1, e)
+                await asyncio.sleep(2)
 
     def apply_rest_data(self, api_pos: dict) -> None:
-        """REST /positions válaszból frissíti az élő adatokat."""
-        pos  = api_pos.get("position", {})
-        mkt  = api_pos.get("market",   {})
-        self.current_level  = mkt.get("bid") or mkt.get("offer")
-        self.open_level     = self.open_level or pos.get("openLevel")
-        self.limit_level    = pos.get("limitLevel")
-        self.stop_level     = pos.get("stopLevel")
-        self.profit_loss    = pos.get("upl")          # Unrealised P&L
-        self.currency       = pos.get("currency")
-        self.created_date   = pos.get("createdDateUTC") or pos.get("createdDate")
-        self.last_poll_at   = datetime.now(timezone.utc)
+        pos = api_pos.get("position", {})
+        mkt = api_pos.get("market", {})
+        self.current_level = mkt.get("bid") or mkt.get("offer")
+        self.open_level    = self.open_level or pos.get("openLevel")
+        self.limit_level   = pos.get("limitLevel")
+        self.stop_level    = pos.get("stopLevel")
+        self.profit_loss   = pos.get("upl")
+        self.currency      = pos.get("currency")
+        self.created_date  = pos.get("createdDateUTC") or pos.get("createdDate")
+        self.last_poll_at  = datetime.now(timezone.utc)
 
     def apply_opu(self, payload: dict) -> None:
-        """WebSocket OPU üzenetből frissíti az állapotot."""
         status = payload.get("status")
         if status == "DELETED":
             self.state        = PositionState.FILLED
             self.close_level  = payload.get("level")
             self.close_reason = payload.get("closeReason", "UNKNOWN")
             self.closed_at    = datetime.now(timezone.utc)
-            logger.info("Zárva (%s) | %s | záróár:%s",self.close_reason, self, self.close_level)
-            asyncio.create_task(self._fetch_close_confirm())
+            logger.info("Zárva (%s) | %s | záróár:%s",
+                        self.close_reason, self, self.close_level)
+            # ── ZÁRÁS: transactions lekérés → CSV frissítés ───────────────
+            asyncio.create_task(self._fetch_transactions_and_log())
         elif status == "OPEN":
             self.current_level = payload.get("level")
             self.limit_level   = payload.get("limitLevel")
             self.stop_level    = payload.get("stopLevel")
             self.last_poll_at  = datetime.now(timezone.utc)
 
-    async def _fetch_close_confirm(self) -> None:
-        """Záráskori P&L lekérése a confirms végpontról."""
-        await asyncio.sleep(1)
-        headers = {"CST": self.cst, "X-SECURITY-TOKEN": self.token}
-        try:
-            async with aiohttp.ClientSession() as s:
-                async with s.get(
-                        f"{self.base_url}/api/v1/confirms/{self.deal_ref}",
-                        headers=headers
-                ) as r:
-                    data = await r.json()
-                    # Capital.com a 'profit' mezőben adja a realizált P&L-t
-                    self.realised_pnl = data.get("profit")
-                    self.currency = data.get("currency") or self.currency
-                    logger.info("[POS] Záráskori P&L: %s %s | %s",
-                                self.realised_pnl, self.currency, self)
-        except Exception as e:
-            logger.warning("[POS] Záráskori confirm hiba: %s", e)
-
-
-# ─── CSV LOGGER ──────────────────────────────────────────────────────────────
-
-class CsvLogger:
-    """
-    Csak lezárt/lejárt pozíciókat ír be — egyszer, append módban.
-    Soha nem írja újra az egész fájlt.
-    """
-
-    def __init__(self, path: str):
-        self.path     = path
-        self._written: set[str] = set()   # deal_ref vagy id() — ne kerüljön be kétszer
-        self._ensure_header()
-
-    def _ensure_header(self) -> None:
-        if not os.path.exists(self.path):
-            with open(self.path, "w", newline="", encoding="utf-8") as f:
-                csv.DictWriter(f, fieldnames=CSV_FIELDS).writeheader()
-            logger.info("[CSV] Fájl létrehozva: %s", self.path)
-
-    def append_if_terminal(self, pos: Position) -> None:
+    async def _fetch_transactions_and_log(self) -> None:
         """
-        Ha a pozíció terminális (FILLED / EXPIRED / CANCELED / ERROR)
-        és még nem lett kiírva, hozzáfűzi a CSV-hez.
+        Transactions végpontról lekéri az összes záráskori adatot,
+        majd frissíti a CSV sort.
         """
-        if not pos.is_terminal():
-            return
-
-        # Egyedi kulcs: deal_ref ha van, egyébként Python object id
-        key = pos.deal_ref or str(id(pos))
-        if key in self._written:
-            return
-
-        with open(self.path, "a", newline="", encoding="utf-8") as f:
-            csv.DictWriter(f, fieldnames=CSV_FIELDS).writerow(pos.to_csv_row())
-
-        self._written.add(key)
-        logger.info("[CSV] ✍️  Mentve (%s): %s", pos.state.value, pos)
-
-
-# ─── POSITION MANAGER ────────────────────────────────────────────────────────
-
-class PositionManager:
-    def __init__(self, base_url: str, cst: str, token: str):
-        self.base_url = base_url
-        self.cst = cst
-        self.token = token
-        self.max_open = MAX_OPEN_POSITIONS
-        self._positions: list[Position] = []
-        self._csv = CsvLogger(CSV_FILE)
-
-    def open_count(self) -> int:
-        """Jelenleg OPEN vagy OPENING állapotú pozíciók száma."""
-        return sum(1 for p in self._positions
-                   if p.state in (PositionState.OPEN, PositionState.OPENING))
-
-    def can_open(self) -> bool:
-        return self.open_count() < self.max_open
-
-    def add(self, config: PositionConfig) -> Position:
-        pos = Position(config, self.base_url, self.cst, self.token, manager=self)  # ← manager=self
-        pos.start()
-        self._positions.append(pos)
-        logger.info("[MGR] ➕ %s | Zone %.2f–%.2f | TP:%.2f SL:%.2f",
-                    pos, config.zone_low, config.zone_high, config.tp, config.sl)
-        return pos
-
-    def broadcast(self, bid: float, ask: float) -> None:
-        for pos in self._positions:
-            pos.on_price(bid, ask)
-
-    def handle_opu(self, payload: dict) -> None:
-        deal_id = payload.get("dealId")
-        for pos in self._positions:
-            if pos.deal_id == deal_id:
-                pos.apply_opu(payload)
-                if pos.is_terminal():
-                    # 3 mp várakozás, hogy a _fetch_close_confirm visszaérjen
-                    asyncio.create_task(self._delayed_csv_write(pos, delay=3.0))
-                break
-
-    async def _delayed_csv_write(self, pos: Position, delay: float) -> None:
-        await asyncio.sleep(delay)
-        self._csv.append_if_terminal(pos)
-
-    async def poll_and_log(self) -> None:
-        # Timeout ellenőrzés
-        for pos in self._positions:
-            if pos.state == PositionState.WAITING:
-                elapsed = (datetime.now(timezone.utc) - pos.registered_at).total_seconds()
-                if elapsed >= POSITION_TIMEOUT_SEC:
-                    pos.state      = PositionState.EXPIRED
-                    pos.expired_at = datetime.now(timezone.utc)
-                    logger.info("[MGR] ⏰ Lejárt: %s", pos)
-                    self._csv.append_if_terminal(pos)   # ← EXPIRED → beírjuk
-
-        # REST frissítés az OPEN pozíciókra
-        open_positions = [p for p in self._positions if p.state == PositionState.OPEN]
-        if open_positions:
-            await self._fetch_rest_positions(open_positions)
-
-        # Ha a REST poll közben vált terminálissá valami
-        for pos in self._positions:
-            self._csv.append_if_terminal(pos)
-
-    async def _fetch_rest_positions(self, targets: list[Position]) -> None:
+        await asyncio.sleep(2)
         headers = {"CST": self.cst, "X-SECURITY-TOKEN": self.token}
-        try:
-            async with aiohttp.ClientSession() as s:
-                async with s.get(f"{self.base_url}/api/v1/positions",
-                                 headers=headers) as r:
-                    data = await r.json()
-                    api_map = {
-                        p["position"]["dealId"]: p
-                        for p in data.get("positions", [])
-                        if "position" in p
-                    }
-                    for pos in targets:
-                        if pos.deal_id in api_map:
-                            pos.apply_rest_data(api_map[pos.deal_id])
-                        else:
-                            if pos.state == PositionState.OPEN:
-                                pos.state        = PositionState.FILLED
-                                pos.close_reason = "CLOSED_EXTERNALLY"
-                                pos.closed_at    = datetime.now(timezone.utc)
-                                logger.warning("[MGR] Pozíció eltűnt a REST-ből: %s", pos)
-        except Exception as e:
-            logger.error("[MGR] REST poll hiba: %s", e)
+        params  = {"dealId": self.deal_id, "lastPeriod": 86400}
 
-    @property
-    def positions(self) -> list[Position]:
-        return list(self._positions)
-
-
-# ─── POLL LOOP ───────────────────────────────────────────────────────────────
-
-async def poll_loop(manager: PositionManager) -> None:
-    """Minden POLL_INTERVAL_SEC másodpercben lekérdezi és menti a pozíciókat."""
-    while True:
-        await asyncio.sleep(POLL_INTERVAL_SEC)
-        await manager.poll_and_log()
-
-
-# ─── ZMQ LISTENER ────────────────────────────────────────────────────────────
-
-async def zmq_listener(manager: PositionManager) -> None:
-    ctx  = zmq.asyncio.Context.instance()
-    sock = ctx.socket(zmq.PULL)
-    sock.bind(ZMQ_PULL_ADDR)
-    logger.info("[ZMQ] Figyelés: %s", ZMQ_PULL_ADDR)
-    try:
-        while True:
-            p = await sock.recv_pyobj()
+        for attempt in range(5):
             try:
-                manager.add(PositionConfig(
-                    epic      = p["epic"],
-                    direction = Direction(p["direction"].upper()),
-                    size      = float(p["size"]),
-                    zone_low  = float(p["zone_low"]),
-                    zone_high = float(p["zone_high"]),
-                    tp        = float(p["tp"]),
-                    sl        = float(p["sl"]),
-                    tp_idx    = int(p["tp_idx"]),
-                    raw_text  = str(p["raw_text"]),
-                    send_date = str(p["send_date"]),
-                    edited    = bool(p["edited"]),
-                    chat_id   = int(p["chat_id"]),
-                    chat_name = str(p["chat_name"]),
-                ))
-                logger.warning("[ZMQ] New signal (%s) (%s) (%f)-(%f) tp: (%f), sl: (%f)", p["epic"],
-                               p["direction"], p["zone_low"], p["zone_high"], p["tp"], p["sl"])
-            except (KeyError, ValueError) as e:
-                logger.warning("[ZMQ] Hibás üzenet (%s)", e)
-    except asyncio.CancelledError:
-        sock.close()
+                async with aiohttp.ClientSession() as s:
+                    async with s.get(
+                        f"{self.base_url}/api/v1/history/transactions",
+                        headers=headers, params=params
+                    ) as r:
+                        data  = await r.json()
+                        items = data.get("transactions", [])
 
+                        if not items:
+                            logger.debug("[CLOSE] Transactions üres, %d. kísérlet...", attempt + 1)
+                            await asyncio.sleep(2 ** attempt)
+                            continue
 
-# ─── SESSION / PING ──────────────────────────────────────────────────────────
+                        t = items[0]
+                        self.open_level   = self.open_level  or t.get("openLevel")
+                        self.close_level  = self.close_level or t.get("closeLevel")
+                        self.realised_pnl = t.get("profitAndLoss")
+                        self.currency     = self.currency    or t.get("currency")
 
-async def create_session() -> tuple[str, str]:
-    headers = {"X-CAP-API-KEY": API_KEY, "Content-Type": "application/json"}
-    body    = {"identifier": IDENTIFIER, "password": PASSWORD, "encryptionKey": False}
-    async with aiohttp.ClientSession() as s:
-        async with s.post(f"{BASE_URL}/api/v1/session",
-                          headers=headers, json=body) as r:
-            r.raise_for_status()
-            logger.info("[AUTH] Bejelentkezés OK")
-            return r.headers["CST"], r.headers["X-SECURITY-TOKEN"]
+                        logger.info(
+                            "[CLOSE] ✅ | open:%.5f close:%.5f pnl:%s %s",
+                            self.open_level  or 0,
+                            self.close_level or 0,
+                            self.realised_pnl,
+                            self.currency or "",
+                        )
+                        # ── CSV sor frissítése ─────────────────────────────
+                        self._manager.csv_update_terminal(self)
+                        return
 
-async def ping_loop(ws, cst, token):
-    while True:
-        await asyncio.sleep(9 * 60)
-        await ws.send(json.dumps({"destination": "ping", "correlationId": 99,
-                                  "cst": cst, "securityToken": token}))
+            except Exception as e:
+                logger.warning("[CLOSE] Transactions hiba (%d. kísérlet): %s",
+                               attempt + 1, e)
+                await asyncio.sleep(2)
 
-
-# ─── FŐ STREAM ───────────────────────────────────────────────────────────────
-
-async def stream_xauusd():
-    cst, token = await create_session()
-    manager    = PositionManager(base_url=BASE_URL, cst=cst, token=token)
-
-    asyncio.create_task(zmq_listener(manager))
-    asyncio.create_task(poll_loop(manager))
-
-    async with websockets.connect(WS_URL) as ws:
-        await ws.send(json.dumps({
-            "destination": "marketData.subscribe", "correlationId": 1,
-            "cst": cst, "securityToken": token,
-            "payload": {"epics": [EPIC]},
-        }))
-        asyncio.create_task(ping_loop(ws, cst, token))
-
-        async for raw in ws:
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-
-            dest = data.get("destination", "")
-
-            if dest == "quote":
-                payload = data.get("payload", {})
-                bid = payload.get("bid")
-                ask = payload.get("ofr")
-                if bid and ask:
-                    manager.broadcast(bid, ask)
-                    # ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                    # print(f"[{ts}]  Bid:{bid:.2f}  Ask:{ask:.2f}")
-
-            elif dest == "OPU":
-                # Valós idejű pozíció-frissítés (TP/SL elérés azonnali jelzése)
-                manager.handle_opu(data.get("payload", {}))
-
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(stream_xauusd())
-    except KeyboardInterrupt:
-        print("\n[EXIT] Leállítás...")
+        # Max kísérlet után is frissítjük, ami megvan
+        logger.warning("[CLOSE] Transactions után hiányos adatok: %s", self)
+        self._manager.csv_update_terminal(self)

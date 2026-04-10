@@ -14,7 +14,7 @@ API_HASH = config["telegram_api_hash"]
 # A csatornák listája (username vagy numerikus ID)
 traderz_gold_wip = -1003496306840
 ann_zerofloat = "@livetradeann"
-technical_pips = "@Technicalpipshuk50"
+technical_pips = "@TechnicalpipsXhuk50"
 gold_trader_mo = "@gold_Trader_mo_gtmofx_Official"
 gold_signal_vip = "@Gold_Signal_Vip_Official"
 mychal_fx = "@CHEMPION_HUB"
@@ -33,6 +33,11 @@ context = zmq.Context()
 socket = context.socket(zmq.PUSH)
 socket.connect("tcp://localhost:5555")
 
+tp_idx_map = {
+    1: 3,
+    2: 2
+}
+
 
 def log_print(message, logfile="app.log"):
     pprint(message)
@@ -42,11 +47,11 @@ def log_print(message, logfile="app.log"):
 
 
 def send_position(event, edited):
-    signal_dict = signal_parser(event.raw_text)
+    signal_dict, error_msg = signal_parser(event.raw_text)
 
     if len(signal_dict) == 0:
         log_print("wrong message\n", "telegram.log")
-        # log_print(event.raw_text)
+        log_print(error_msg)
     else:
         log_print("message ok\n", "telegram.log")
         # log_print(event.raw_text)
@@ -54,7 +59,7 @@ def send_position(event, edited):
             position_dict = {
                 "epic": "GOLD",
                 "direction": signal_dict["direction"],
-                "size": 1.0,
+                "size": 1.0 * tp_idx_map.get(tp_idx, 1),
                 "zone_low": min(signal_dict["entries"]),
                 "zone_high": max(signal_dict["entries"]),
                 "tp": tp,

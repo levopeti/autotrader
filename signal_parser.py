@@ -7,6 +7,7 @@ import re
 def signal_parser(signal: str):
     signal_dict = dict()
     signal = emoji.replace_emoji(signal, replace='')
+    error_msg = "not a signal"
     if ("XAU" in signal.upper() or "GOLD" in signal.upper()) and ("SELL" in signal.upper() or "BUY" in signal.upper()):
         direction = None
         entries = list()
@@ -17,20 +18,20 @@ def signal_parser(signal: str):
         for line in lines:
             if "BUY" in line.upper():
                 if direction is not None:
-                    print("Error, direction: ", line)
-                    return {}
+                    print("Error, direction: {}".format(line))
+                    return {}, "Error, direction: {}".format(line)
                 direction = "BUY"
 
             if "SELL" in line.upper():
                 if direction is not None:
-                    print("Error, direction: ", line)
-                    return {}
+                    print("Error, direction: {}".format(line))
+                    return {}, "Error, direction: {}".format(line)
                 direction = "SELL"
 
             numbers = [x for x in re.findall(r'\d+', line) if len(x) > 1]
             if len(numbers) >= 3:
-                print("Error, numbers: ", numbers)
-                return {}
+                print("Error, direction: {}".format(line))
+                return {}, "Error, direction: {}".format(line)
 
             if len(numbers) == 2 or "ENTRY" in line.upper():
                 for n in numbers:
@@ -60,29 +61,31 @@ def signal_parser(signal: str):
         }
 
         if len(signal_dict["sl_list"]) != 1:
-            print("Error, sl_list: ", signal_dict["sl_list"])
-            return {}
+            print("Error, sl_list: {}".format(signal_dict["sl_list"]))
+            return {}, "Error, sl_list: {}".format(signal_dict["sl_list"])
 
         if len(signal_dict["entries"]) == 1:
             signal_dict["entries"] = [signal_dict["entries"] - 1, signal_dict["entries"] + 1]
 
         if len(signal_dict["entries"]) != 2:
             print("Error, entries: ", signal_dict["entries"])
-            return {}
+            return {}, "Error, entries: {}".format(signal_dict["entries"])
 
         # check signal
         signal_ok = True
+        error_msg = "ok"
         if signal_dict["direction"] == "BUY":
             for e in signal_dict["entries"]:
                 if signal_dict["sl_list"][0] > e:
                     signal_ok = False
+                    break
 
             for tp in signal_dict["tp_list"]:
                 if signal_dict["sl_list"][0] > tp:
                     signal_ok = False
 
             for tp in signal_dict["tp_list"]:
-                if signal_dict["entries"][0] > tp:
+                if max(signal_dict["entries"]) > tp:
                     signal_ok = False
         else:  # SELL
             for e in signal_dict["entries"]:
@@ -94,12 +97,13 @@ def signal_parser(signal: str):
                     signal_ok = False
 
             for tp in signal_dict["tp_list"]:
-                if signal_dict["entries"][0] < tp:
+                if min(signal_dict["entries"]) < tp:
                     signal_ok = False
 
-            if not signal_ok:
-                signal_dict = dict()
-    return signal_dict
+        if not signal_ok:
+            signal_dict = dict()
+            error_msg = "entry, tp, sl error"
+    return signal_dict, error_msg
 
 if __name__ == '__main__':
     good_signal = [
