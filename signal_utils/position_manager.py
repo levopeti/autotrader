@@ -134,12 +134,14 @@ class PositionManager:
 
     # ── Indításkori CSV backfill ──────────────────────────────────────────────
 
+    # ── Indításkori CSV backfill ──────────────────────────────────────────────
+
     async def startup_backfill_csv(self) -> None:
         """
         Indításkor egyszer végigmegy a CSV-n.
         FILLED soroknál ahol hiányzik open_level / close_level / realised_pnl,
-        kizárólag a transactions végponttal pótolja az adatokat,
-        majd update_row_by()-jal helyben javítja a sort.
+        elsőként a /confirms/{dealReference} végpontot hívja,
+        fallback esetén a transactions végpontot használja.
         """
         rows = self._csv.read_all()
         if not rows:
@@ -165,7 +167,20 @@ class PositionManager:
 
         for row in incomplete:
             deal_id = row["deal_id"]
-            updates = await self._fetch_transactions_for_row(deal_id)
+            deal_reference = row.get("deal_reference", "").strip()
+
+            updates = {}
+
+            # 1. Elsődleges forrás: /confirms/{dealReference}
+            if deal_reference:
+                updates = await self._fetch_confirms_for_row(deal_reference)
+                if updates:
+                    logger.info("[STARTUP] ✅ Confirms forrás: deal_reference=%s", deal_reference)
+
+            # # 2. Fallback: /history/transactions ha a confirms nem hozott eredményt
+            # if not updates:
+            #     logger.info("[STARTUP] Confirms üres, transactions fallback: deal_id=%s", deal_id)
+            #     updates = await self._fetch_transactions_for_row(deal_id)
 
             if not updates:
                 logger.warning("[STARTUP] Nem érkezett adat deal_id=%s", deal_id)
@@ -188,37 +203,66 @@ class PositionManager:
             else:
                 logger.warning("[STARTUP] Sor nem található deal_id=%s", deal_id)
 
-    async def _fetch_transactions_for_row(self, deal_id: str) -> dict:
-        """Transactions végpont lekérése egy CSV sorhoz — dict-et ad vissza."""
+    async def _fetch_confirms_for_row(self, deal_reference: str) -> dict:
+        """
+        /confirms/{dealReference} végpont lekérése.
+
+        Visszatérési mezők:
+            - open_level  ← az API nem adja vissza közvetlenül, nincs confirms-ban
+            - close_level ← confirms 'level' mezője (a végrehajtási árfolyam)
+            - realised_pnl ← confirms 'profit' mezője
+            - currency     ← confirms 'currency' mezője (ha elérhető)
+
+        Megjegyzés: a /confirms végpont a lezárási árfolyamot ('level') adja vissza,
+        de nyitási árfolyamot nem — azt a transactions végpont tölti ki.
+        """
         headers = {"CST": self.cst, "X-SECURITY-TOKEN": self.token}
-        params = {"dealId": deal_id, "lastPeriod": 86400}
+        url = f"{self.base_url}/api/v1/confirms/{deal_reference}"
 
         for attempt in range(5):
             try:
                 async with aiohttp.ClientSession() as s:
-                    async with s.get(
-                            f"{self.base_url}/api/v1/history/transactions",
-                            headers=headers, params=params
-                    ) as r:
-                        data = await r.json()
-                        items = data.get("transactions", [])
+                    async with s.get(url, headers=headers) as r:
+                        if r.status == 404:
+                            logger.info("[STARTUP] Confirms 404 deal_reference=%s", deal_reference)
+                            return {}
 
-                        if not items:
+                        if r.status != 200:
+                            logger.warning(
+                                "[STARTUP] Confirms HTTP %d, %d. kísérlet, deal_reference=%s",
+                                r.status, attempt + 1, deal_reference
+                            )
                             await asyncio.sleep(2 ** attempt)
                             continue
 
-                        t = items[0]
+                        data = await r.json()
+
+                        # REJECTED deal esetén nincs értelmes árfolyam
+                        if data.get("dealStatus") == "REJECTED" or data.get("level", 0) == 0:
+                            logger.info(
+                                "[STARTUP] Confirms REJECTED/level=0, skip: deal_reference=%s",
+                                deal_reference
+                            )
+                            return {}
+
+                        open_level = data.get("level")
+                        close_level = data.get("profitLevel")
+                        pnl = close_level - open_level if data.get("direction") == "BUY" else open_level - close_level
+
                         return {
                             k: v for k, v in {
-                                "open_level": t.get("openLevel"),
-                                "close_level": t.get("closeLevel"),
-                                "realised_pnl": t.get("profitAndLoss"),
-                                "currency": t.get("currency"),
+                                "close_level": close_level,
+                                "realised_pnl": round(pnl, 2),
+                                "currency": data.get("currency"),
+                                "deal_status": data.get("dealStatus"),
                             }.items() if v is not None
                         }
+
             except Exception as e:
-                logger.warning("[STARTUP] Transactions hiba (%d. kísérlet) deal_id=%s: %s",
-                               attempt + 1, deal_id, e)
+                logger.warning(
+                    "[STARTUP] Confirms hiba (%d. kísérlet) deal_reference=%s: %s",
+                    attempt + 1, deal_reference, e
+                )
                 await asyncio.sleep(2)
 
         return {}

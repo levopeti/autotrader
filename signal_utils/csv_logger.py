@@ -19,6 +19,7 @@ CSV_FIELDS = [
     "direction",
     "size",
     "state",
+    "deal_status",
     # Konfig
     "zone_low",
     "zone_high",

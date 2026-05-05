@@ -1,3 +1,4 @@
+import csv
 import functools
 import http.client
 import json
@@ -228,6 +229,19 @@ def close_position(_xt, _cst, _deal_id):
     print(data.decode("utf-8"))
 
 
+def confirms(_deal_ref):
+    conn = http.client.HTTPSConnection(DEMO_URL)
+    payload = ''
+    headers = {
+        'X-SECURITY-TOKEN': tokens.X_SECURITY_TOKEN,
+        'CST': tokens.CST
+    }
+    conn.request("GET", "/api/v1/confirms/{}".format(_deal_ref), payload, headers)
+    res = conn.getresponse()
+    data = res.read()
+    return json.loads(data.decode("utf-8"))
+
+
 def all_positions():
     conn = http.client.HTTPSConnection(DEMO_URL)
     payload = ''
@@ -285,8 +299,9 @@ if __name__ == '__main__':
         "direction": "BUY",
         "size": 0.01,
         "guaranteedStop": False,
-        "stopLevel": 4525,
-        "profitLevel": 4545
+        "stopLevel": 4725,
+        "profitLevel": 4745,
+        "dealReference": "o_777001_TREND_a1b2c3d4",
     }
     deal_id = "00601567-0055-311e-0000-0000846f017a"
 
@@ -296,9 +311,17 @@ if __name__ == '__main__':
     # pprint(header_dict)
     # ping_server(header_dict["X-SECURITY-TOKEN"], header_dict["CST"])
     # all_account(header_dict["X-SECURITY-TOKEN"], header_dict["CST"])
-    activity_history()
-    # create_position(header_dict["X-SECURITY-TOKEN"], header_dict["CST"], position)
+    # activity_history()
+    pprint(create_position(position))
     # get_position(header_dict["X-SECURITY-TOKEN"], header_dict["CST"], deal_id)
     # close_position(header_dict["X-SECURITY-TOKEN"], header_dict["CST"], deal_id)
     # all_positions()
     # pprint(get_position("00601567-0055-311e-0000-0000848473ec"))
+    # pprint(confirms("o_bd3df9bc-4dec-4724-9ba5-f9319df0ce34"))
+
+    # with open("./positions.csv", "r", newline="", encoding="utf-8") as f:
+    #     for row in csv.DictReader(f):
+    #         if row["deal_reference"] is not None:
+    #             confirm = confirms(row["deal_reference"])
+    #             if "error" not in confirm:
+    #                 pprint(confirm)

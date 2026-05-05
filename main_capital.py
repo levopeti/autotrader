@@ -1,5 +1,7 @@
 import asyncio
 import json
+from time import sleep
+
 import aiohttp
 import websockets
 import zmq
@@ -108,7 +110,8 @@ async def stream_xauusd():
     cst, token = await create_session()
     manager = PositionManager(base_url=BASE_URL, cst=cst, token=token)
 
-    await manager.startup_backfill_csv()
+    # TODO
+    # await manager.startup_backfill_csv()
 
     asyncio.create_task(zmq_listener(manager))
     asyncio.create_task(poll_loop(manager))
@@ -154,8 +157,13 @@ async def stream_xauusd():
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(stream_xauusd())
-    except KeyboardInterrupt:
-        print("\n[EXIT] Leállítás...")
+    while True:
+        try:
+            asyncio.run(stream_xauusd())
+        except websockets.exceptions.ConnectionClosedError:
+            print("ConnectionClosedError error. 10 min sleep")
+            sleep(10 * 60)
+        except KeyboardInterrupt:
+            print("\n[EXIT] Leállítás...")
+            break
 

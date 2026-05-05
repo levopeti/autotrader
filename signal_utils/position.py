@@ -1,10 +1,12 @@
 import asyncio
 import aiohttp
 import logging
+
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
+from time import sleep
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
@@ -151,7 +153,9 @@ class Position:
         }
 
     def __repr__(self):
-        return f"<Position {self.config.direction.value} {self.config.epic} {self.state.value}>"
+        return (f"<Position {self.config.direction.value} {self.config.epic} {self.state.value} "
+                f"entry: {self.config.zone_low}-{self.config.zone_high} tp: {self.config.tp} sl: {self.config.sl} "
+                f"size: {self.config.size}>")
 
     # ── Belső logika ──────────────────────────────────────────────────────────
 
@@ -224,6 +228,7 @@ class Position:
                     logger.info("✅ Nyitva | ref:%s | %s %s | TP:%.2f SL:%.2f",
                                 self.deal_ref, self.config.direction.value,
                                 self.config.epic, self.config.tp, self.config.sl)
+                    sleep(0.5)
                     asyncio.create_task(self._fetch_confirm())
         except Exception as e:
             self.state     = PositionState.ERROR

@@ -17,13 +17,13 @@ def signal_parser(signal: str):
 
         for line in lines:
             if "BUY" in line.upper():
-                if direction is not None:
+                if direction is not None and direction != "BUY":
                     print("Error, direction: {}".format(line))
                     return {}, "Error, direction: {}".format(line)
                 direction = "BUY"
 
             if "SELL" in line.upper():
-                if direction is not None:
+                if direction is not None and direction != "SELL":
                     print("Error, direction: {}".format(line))
                     return {}, "Error, direction: {}".format(line)
                 direction = "SELL"

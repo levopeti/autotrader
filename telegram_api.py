@@ -1,6 +1,6 @@
 import json
 import zmq
-from datetime import datetime
+from datetime import datetime, timezone
 from telethon import TelegramClient, events
 from signal_parser import signal_parser
 from pprint import pprint
@@ -13,18 +13,19 @@ API_HASH = config["telegram_api_hash"]
 
 # A csatornák listája (username vagy numerikus ID)
 traderz_gold_wip = -1003496306840
-ann_zerofloat = "@livetradeann"
-technical_pips = "@TechnicalpipsXhuk50"
+technical_pips_vip = -1002001216034
 gold_trader_mo = "@gold_Trader_mo_gtmofx_Official"
-gold_signal_vip = "@Gold_Signal_Vip_Official"
+
+ann_zerofloat = "@livetradeann"
+gold_signal_vip = "@GoldSignalsVipOriginal"
 mychal_fx = "@CHEMPION_HUB"
 CHANNELS = [
-    traderz_gold_wip,
-    ann_zerofloat,
-    technical_pips,
-    gold_trader_mo,
-    gold_signal_vip,
-    mychal_fx
+    # traderz_gold_wip,
+    # ann_zerofloat,
+    technical_pips_vip,
+    # gold_trader_mo,
+    # gold_signal_vip,
+    # mychal_fx
 ]
 
 client = TelegramClient('session_neve', API_ID, API_HASH)
@@ -37,6 +38,7 @@ tp_idx_map = {
     1: 3,
     2: 2
 }
+entry_zone_expand = 1
 
 
 def log_print(message, logfile="app.log"):
@@ -59,14 +61,14 @@ def send_position(event, edited):
             position_dict = {
                 "epic": "GOLD",
                 "direction": signal_dict["direction"],
-                "size": 1.0 * tp_idx_map.get(tp_idx, 1),
-                "zone_low": min(signal_dict["entries"]),
-                "zone_high": max(signal_dict["entries"]),
+                "size": 1.0 * tp_idx_map.get(tp_idx + 1, 1),
+                "zone_low": min(signal_dict["entries"]) - entry_zone_expand,
+                "zone_high": max(signal_dict["entries"]) + entry_zone_expand,
                 "tp": tp,
                 "sl": signal_dict["sl_list"][0],
-                "tp_idx": tp_idx,
+                "tp_idx": tp_idx + 1,
                 "raw_text": event.raw_text,
-                "send_date": datetime.now().strftime('%y:%m:%d:%H:%M:%S'),
+                "send_date": datetime.now(timezone.utc).strftime('%y:%m:%d:%H:%M:%S'),
                 "edited": edited,
                 "chat_id": event.chat.id,
                 "chat_name": event.chat.title,
