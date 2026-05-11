@@ -1,0 +1,117 @@
+global:
+  dry_run: false
+  api_base_url: "https://demo-api-capital.backend-capital.com"
+  ws_url: "wss://api-streaming-capital.backend-capital.com/connect"
+  resolution: "MINUTE"
+  num_points: 200
+  decision_interval_sec: 15
+  max_daily_trades: 20
+  allow_only_one_position_per_instrument: true
+  use_trailing_stop: true
+  enable_common_logs: true
+  log_dir: "./logs"
+  state_csv: "bot_state_multi.csv"
+  trade_journal_csv: "trade_journal_multi.csv"
+  closed_trades_csv: "closed_trades_multi.csv"
+  position_tracker_csv: "position_tracker_multi.csv"
+  tick_csv: "tick_data_multi.csv"
+  flush_every_n_ticks: 500
+  flush_every_sec: 30
+  default_session_filter: false
+
+instruments:
+  - symbol: "GOLD"
+    enabled: true
+    market_type: "commodity"
+    order_size: 1.0
+    min_order_size: 0.8
+    max_order_size: 1.6
+    ema_fast: 9
+    ema_slow: 21
+    rsi_period: 7
+    atr_period: 14
+    rsi_long_level: 55
+    rsi_short_level: 45
+    reversal_rsi_long: 56
+    reversal_rsi_short: 44
+    tick_buffer_size: 20
+    tick_confirm_window: 4
+    tick_min_imbalance: 0.40
+    max_spread_atr: 0.18
+    trailing_stop_atr_mult: 1.5
+    min_stop_distance_abs: 0.5
+    enable_session_filter: false
+    trading_start_hour_utc: 7
+    trading_end_hour_utc: 18
+
+  - symbol: "SILVER"
+    enabled: true
+    market_type: "commodity"
+    order_size: 0.8
+    min_order_size: 0.5
+    max_order_size: 1.0
+    ema_fast: 9
+    ema_slow: 21
+    rsi_period: 7
+    atr_period: 14
+    rsi_long_level: 57
+    rsi_short_level: 43
+    reversal_rsi_long: 58
+    reversal_rsi_short: 42
+    tick_buffer_size: 24
+    tick_confirm_window: 5
+    tick_min_imbalance: 0.50
+    max_spread_atr: 0.20
+    trailing_stop_atr_mult: 1.8
+    min_stop_distance_abs: 0.05
+    enable_session_filter: false
+    trading_start_hour_utc: 7
+    trading_end_hour_utc: 18
+
+  - symbol: "BTCUSD"
+    enabled: true
+    market_type: "crypto"
+    order_size: 0.1
+    min_order_size: 0.05
+    max_order_size: 0.2
+    ema_fast: 9
+    ema_slow: 21
+    rsi_period: 7
+    atr_period: 14
+    rsi_long_level: 56
+    rsi_short_level: 44
+    reversal_rsi_long: 58
+    reversal_rsi_short: 42
+    tick_buffer_size: 30
+    tick_confirm_window: 8
+    tick_min_imbalance: 0.60
+    max_spread_atr: 0.15
+    trailing_stop_atr_mult: 2.0
+    min_stop_distance_abs: 5.0
+    enable_session_filter: false
+    trading_start_hour_utc: 0
+    trading_end_hour_utc: 24
+
+  - symbol: "ETHUSD"
+    enabled: true
+    market_type: "crypto"
+    order_size: 0.5
+    min_order_size: 0.2
+    max_order_size: 1.0
+    ema_fast: 9
+    ema_slow: 21
+    rsi_period: 7
+    atr_period: 14
+    rsi_long_level: 56
+    rsi_short_level: 44
+    reversal_rsi_long: 58
+    reversal_rsi_short: 42
+    tick_buffer_size: 30
+    tick_confirm_window: 8
+    tick_min_imbalance: 0.60
+    max_spread_atr: 0.16
+    trailing_stop_atr_mult: 2.0
+    min_stop_distance_abs: 1.0
+    enable_session_filter: false
+    trading_start_hour_utc: 0
+    trading_end_hour_utc: 24

@@ -10,7 +10,7 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
 MAX_OPEN_POSITIONS = 8
-SENDER_MAX_OPEN_POSITIONS = 4
+SENDER_MAX_OPEN_POSITIONS = 6
 POSITION_TIMEOUT_SEC = 15 * 60
 CSV_FILE = "positions.csv"
 CS_WRITE_DELAY = 10  # sec
@@ -37,13 +37,26 @@ class PositionManager:
 
     def can_open(self, sender) -> bool:
         return (
-                self.open_count() < self.max_open
-                and self.open_count(sender) < self.sender_max_open
+            self.open_count() < self.max_open
+            and self.open_count(sender) < self.sender_max_open
         )
 
     # ── Pozíció hozzáadása ────────────────────────────────────────────────────
 
-    def add(self, config: PositionConfig) -> Position:
+    def add(self, config: PositionConfig) -> Position | None:
+        """
+        Pozíciót ad hozzá ha a limitek engedik.
+        A limit ellenőrzést itt is elvégzi, de a fő védelem a position_opener worker-ben van.
+        Visszatér None-nal ha a limit el van érve.
+        """
+        if not self.can_open(config.chat_id):
+            logger.warning(
+                "[MGR] ⛔ Limit elérve (össz: %d/%d, sender: %d/%d), szignál eldobva",
+                self.open_count(), self.max_open,
+                self.open_count(config.chat_id), self.sender_max_open,
+            )
+            return None
+
         pos = Position(config, self.base_url, self.cst, self.token, manager=self)
         pos.start()
         self._positions.append(pos)
@@ -131,8 +144,6 @@ class PositionManager:
                             asyncio.create_task(pos._fetch_transactions_and_log())
         except Exception as e:
             logger.error("[MGR] REST poll hiba: %s", e)
-
-    # ── Indításkori CSV backfill ──────────────────────────────────────────────
 
     # ── Indításkori CSV backfill ──────────────────────────────────────────────
 
@@ -266,6 +277,16 @@ class PositionManager:
                 await asyncio.sleep(2)
 
         return {}
+
+    # ── Pending CSV backfill ──────────────────────────────────────────────────
+
+    async def process_pending_csv(self) -> None:
+        """
+        Periodikusan ellenőrzi a terminális, de hiányos CSV sorokat és
+        megpróbálja kitölteni a hiányzó mezőket a confirms végponttal.
+        (Opcionális backfill_loop-hoz.)
+        """
+        await self.startup_backfill_csv()
 
     @property
     def positions(self) -> list[Position]:

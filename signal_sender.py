@@ -1,35 +1,62 @@
 import zmq
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timezone
+from signal_parser import signal_parser
 
-def send_signal(direction, lot_size, sl, tp, entry_low, entry_high):
+tp_idx_map = {
+    1: 3,
+    2: 2
+}
+entry_zone_expand = 1
+
+
+def send_signal(raw_signal):
     context = zmq.Context()
     socket = context.socket(zmq.PUSH)
-    socket.bind("tcp://localhost:5556")
-    
-    signal = {
-        'direction': direction,  # 'BUY' vagy 'SELL'
-        'lot_size': lot_size,    # pl. 0.1, 0.5, 1.0
-        'sl': sl,      # pl. 30, 50
-        'tp': tp,      # pl. 60, 100
-        'entry_low': entry_low,  # pl. 2500.50
-        'entry_high': entry_high, # pl. 2501.00
-        'sent_date': datetime.now().strftime('%y:%m:%d:%H:%M:%S')
-    }
-    
-    # socket.send_json({"mama": datetime.now().strftime('%H:%M:%S')})
-    socket.send_pyobj(signal)
-    print(f"📤 Jel elküldve: {signal}")
+    socket.connect("tcp://localhost:5555")
+
+    signal_dict, error_msg = signal_parser(raw_signal)
+
+    if len(signal_dict) == 0:
+        print("wrong message\n", "telegram.log")
+        print(error_msg)
+    else:
+        print("message ok\n", "telegram.log")
+        # log_print(event.raw_text)
+        for tp_idx, tp in enumerate(signal_dict["tp_list"]):
+            position_dict = {
+                "epic": "GOLD",
+                "direction": signal_dict["direction"],
+                "size": 1.0 * tp_idx_map.get(tp_idx + 1, 1),
+                "zone_low": min(signal_dict["entries"]) - entry_zone_expand,
+                "zone_high": max(signal_dict["entries"]) + entry_zone_expand,
+                "tp": tp,
+                "sl": signal_dict["sl_list"][0],
+                "tp_idx": tp_idx + 1,
+                "raw_text": raw_signal,
+                "send_date": datetime.now(timezone.utc).strftime('%y:%m:%d:%H:%M:%S'),
+                "edited": False,
+                "chat_id": 000,
+                "chat_name": "test",
+            }
+            socket.send_pyobj(position_dict)
     socket.close()
+
 
 # Példa jelek
 if __name__ == '__main__':
-    send_signal('BUY', 0.01, 5140, 5150, 5143, 5146)
-
-
-
-
+    actual_price = 4684
+    signal = "#XAUUSD BUY{}-{}\nTP {}\nTP {}\nTP {}\nTP {}\nTP {}\nTP {}\n\nSL {}\n".format(actual_price - 5,
+                                                                                            actual_price + 5,
+                                                                                            actual_price + 15,
+                                                                                            actual_price + 20,
+                                                                                            actual_price + 25,
+                                                                                            actual_price + 30,
+                                                                                            actual_price + 35,
+                                                                                            actual_price + 40,
+                                                                                            actual_price - 15)
+    send_signal(signal)
 
 # def next(self):
 #         if self.position:
