@@ -21,7 +21,7 @@ PASSWORD = config["capital_pw"]
 CAPITAL_ACCOUNT_ID = "320258870701535518"
 
 MARKET_SYMBOL = os.getenv("MARKET_SYMBOL", "GOLD")
-TICK_CSV = os.getenv("TICK_CSV", "tick_data.csv")
+TICK_PARQUET = os.getenv("TICK_PARQUET", "./logs/tick_data.parquet")
 FLUSH_EVERY_N_TICKS = int(os.getenv("FLUSH_EVERY_N_TICKS", "500"))
 FLUSH_EVERY_SEC = int(os.getenv("FLUSH_EVERY_SEC", "30"))
 
@@ -115,13 +115,13 @@ class CapitalClient:
 
 
 class TickBuffer:
-    def __init__(self, csv_path, flush_every_n_ticks=500):
-        self.csv_path = Path(csv_path)
+    def __init__(self, parquet_path, flush_every_n_ticks=500):
+        self.parquet_path = Path(parquet_path)
         self.flush_every_n_ticks = flush_every_n_ticks
         self.rows = []
         self.last_flush_ts = time.time()
         self.columns = [
-            "timestamp_utc", "instrument", "epic", "bid", "ask", "mid", "spread", "tick_source_ts", "raw_payload"
+            "timestamp_utc", "instrument", "epic", "bid", "ask", "mid", "spread", "tick_source_ts"
         ]
 
     def add_tick(self, row):
@@ -130,7 +130,9 @@ class TickBuffer:
     def as_dataframe(self):
         if not self.rows:
             return pd.DataFrame(columns=self.columns)
-        return pd.DataFrame(self.rows, columns=self.columns)
+        df = pd.DataFrame(self.rows, columns=self.columns)
+        df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"], utc=True, errors="coerce")
+        return df
 
     def should_flush(self, force=False):
         if force:
@@ -145,12 +147,16 @@ class TickBuffer:
         if not self.should_flush(force=force) or not self.rows:
             return 0
         df = self.as_dataframe()
-        header = not self.csv_path.exists()
-        df.to_csv(self.csv_path, mode="a", header=header, index=False)
-        n = len(df)
+
+        if self.parquet_path.exists():
+            existing = pd.read_parquet(self.parquet_path)
+            df = pd.concat([existing, df], ignore_index=True)
+
+        df.to_parquet(self.parquet_path, index=False, compression="snappy")
+        n = len(self.rows)
         self.rows = []
         self.last_flush_ts = time.time()
-        logger.info("Flushed %s ticks to %s", n, self.csv_path)
+        logger.info("Flushed %s ticks to %s", n, self.parquet_path)
         return n
 
 
@@ -174,7 +180,6 @@ def extract_tick_row(epic, payload):
         "mid": mid,
         "spread": spread,
         "tick_source_ts": tick_source_ts,
-        "raw_payload": json.dumps(payload, ensure_ascii=False),
     }
 
 
@@ -233,10 +238,10 @@ async def ws_collect_ticks(client, epic, buffer):
             await asyncio.sleep(5)
 
 
-def reconstruct_fill_from_ticks(tick_csv, signal_time_utc, direction):
-    df = pd.read_csv(tick_csv)
+def reconstruct_fill_from_ticks(tick_parquet, signal_time_utc, direction):
+    df = pd.read_parquet(tick_parquet)
     if df.empty:
-        raise ValueError("Tick CSV is empty")
+        raise ValueError("Tick Parquet is empty")
     df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"], utc=True, errors="coerce")
     signal_time = pd.to_datetime(signal_time_utc, utc=True, errors="coerce")
     df = df.dropna(subset=["timestamp_utc"]).sort_values("timestamp_utc")
@@ -263,9 +268,9 @@ async def main():
     client.ensure_login()
     client.ensure_account(CAPITAL_ACCOUNT_ID)
     epic = client.resolve_epic()
-    buffer = TickBuffer(TICK_CSV, flush_every_n_ticks=FLUSH_EVERY_N_TICKS)
+    buffer = TickBuffer(TICK_PARQUET, flush_every_n_ticks=FLUSH_EVERY_N_TICKS)
 
-    logger.info("Tick logger started | epic=%s | csv=%s | flush_n=%s | flush_sec=%s", epic, TICK_CSV, FLUSH_EVERY_N_TICKS, FLUSH_EVERY_SEC)
+    logger.info("Tick logger started | epic=%s | parquet=%s | flush_n=%s | flush_sec=%s", epic, TICK_PARQUET, FLUSH_EVERY_N_TICKS, FLUSH_EVERY_SEC)
 
     try:
         await asyncio.gather(
@@ -277,4 +282,10 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    while True:
+        try:
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            print(e)
