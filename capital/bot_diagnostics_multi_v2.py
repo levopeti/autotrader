@@ -5,11 +5,11 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
-TRADE_JOURNAL_CSV = os.getenv("TRADE_JOURNAL_CSV", "./logs/trade_journal_multi.csv")
-BOT_STATE_CSV = os.getenv("BOT_STATE_CSV", "./logs/bot_state_multi.csv")
-POSITION_TRACKER_CSV = os.getenv("POSITION_TRACKER_CSV", "./logs/position_tracker_multi.csv")
-CLOSED_TRADES_CSV = os.getenv("CLOSED_TRADES_CSV", "./logs/closed_trades_multi.csv")
-OUTPUT_PREFIX = os.getenv("OUTPUT_PREFIX", "./logs/bot_diagnostics_multi_v2")
+TRADE_JOURNAL_CSV = os.getenv("TRADE_JOURNAL_CSV", "logs/trade_journal_multi.csv")
+BOT_STATE_CSV = os.getenv("BOT_STATE_CSV", "logs/bot_state_multi.csv")
+POSITION_TRACKER_CSV = os.getenv("POSITION_TRACKER_CSV", "logs/position_tracker_multi.csv")
+CLOSED_TRADES_CSV = os.getenv("CLOSED_TRADES_CSV", "logs/closed_trades_multi.csv")
+OUTPUT_PREFIX = os.getenv("OUTPUT_PREFIX", "capital/logs/bot_diagnostics_multi_v2")
 
 
 def load_csv(path):

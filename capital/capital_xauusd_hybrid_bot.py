@@ -12,7 +12,7 @@ import pandas as pd
 import requests
 import websockets
 
-with open('keys_urls.json', 'r') as f:
+with open('../keys_urls.json', 'r') as f:
     config = json.load(f)
 
 API_BASE_URL = "https://demo-api-capital.backend-capital.com"

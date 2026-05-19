@@ -9,8 +9,8 @@ import zmq
 import zmq.asyncio
 import logging
 
-from signal_utils.position import Direction, PositionConfig, PositionState
-from signal_utils.position_manager import PositionManager
+from signal.signal_utils.position import Direction, PositionConfig, PositionState
+from signal.signal_utils.position_manager import PositionManager
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)

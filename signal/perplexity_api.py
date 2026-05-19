@@ -1,12 +1,8 @@
 import json
 from datetime import datetime
-from pprint import pprint
 
 import zmq
-from time import sleep
 from openai import OpenAI
-
-from capital_api import new_session, create_position, get_prices
 
 client = OpenAI(
     api_key="",

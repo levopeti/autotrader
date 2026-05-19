@@ -5,7 +5,7 @@ import tempfile
 import shutil
 
 from datetime import datetime, timezone
-from signal_utils.position import Position
+from signal.signal_utils.position import Position
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)

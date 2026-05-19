@@ -4,7 +4,7 @@ import http.client
 import json
 from pprint import pprint
 
-with open('keys_urls.json', 'r') as f:
+with open('../keys_urls.json', 'r') as f:
     config = json.load(f)
 
 API_KEY = config["capital_api_key"]

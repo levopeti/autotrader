@@ -4,10 +4,10 @@ import json
 import plotly.express as px
 import plotly.io as pio
 
-state_path = Path('./logs/bot_state_multi.csv')
-trade_path = Path('./logs/trade_journal_multi.csv')
-tracker_path = Path('./logs/position_tracker_multi.csv')
-closed_path = Path('./logs/closed_trades_multi.csv')
+state_path = Path('logs/bot_state_multi.csv')
+trade_path = Path('logs/trade_journal_multi.csv')
+tracker_path = Path('logs/position_tracker_multi.csv')
+closed_path = Path('logs/closed_trades_multi.csv')
 
 out = Path('output')
 out.mkdir(exist_ok=True)

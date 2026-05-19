@@ -3,8 +3,8 @@ import aiohttp
 import logging
 from datetime import datetime, timezone
 
-from signal_utils.csv_logger import CsvLogger
-from signal_utils.position import PositionState, Position, PositionConfig
+from signal.signal_utils.csv_logger import CsvLogger
+from signal.signal_utils.position import PositionState, Position, PositionConfig
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)

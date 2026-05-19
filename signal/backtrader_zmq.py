@@ -4,7 +4,7 @@ import time
 from pprint import pprint
 from datetime import datetime, timedelta
 
-from capital_api import get_prices, create_position
+from capital.capital_api import get_prices, create_position
 
 EXPIRATION_TIME = timedelta(minutes=10)
 

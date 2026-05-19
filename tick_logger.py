@@ -21,7 +21,7 @@ PASSWORD = config["capital_pw"]
 CAPITAL_ACCOUNT_ID = "320258870701535518"
 
 MARKET_SYMBOL = os.getenv("MARKET_SYMBOL", "GOLD")
-TICK_PARQUET = os.getenv("TICK_PARQUET", "./logs/tick_data.parquet")
+TICK_PARQUET = os.getenv("TICK_PARQUET", "./data/tick_data_GOLD.parquet")
 FLUSH_EVERY_N_TICKS = int(os.getenv("FLUSH_EVERY_N_TICKS", "500"))
 FLUSH_EVERY_SEC = int(os.getenv("FLUSH_EVERY_SEC", "30"))
 

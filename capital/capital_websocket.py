@@ -4,7 +4,7 @@ import aiohttp
 import websockets
 from datetime import datetime
 
-with open('keys_urls.json', 'r') as f:
+with open('../keys_urls.json', 'r') as f:
     config = json.load(f)
 
 # ─── KONFIGURÁCIÓ ────────────────────────────────────────────────────────────

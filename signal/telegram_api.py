@@ -5,7 +5,7 @@ from telethon import TelegramClient, events
 from signal_parser import signal_parser
 from pprint import pprint
 
-with open('keys_urls.json', 'r') as f:
+with open('../keys_urls.json', 'r') as f:
     config = json.load(f)
 
 API_ID = config["telegram_api_id"]
