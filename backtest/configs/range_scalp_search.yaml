@@ -1,0 +1,44 @@
+# RangeScalp — hangolható paraméterek
+# A backtest/configs/range_scalp.yaml-ből az itt felsorolt paramétereket
+# az Optuna újrasuggest-eli minden trial-ban.
+
+strategy_params:
+  adx_period:        {type: int,   low: 7,    high: 28}
+  adx_threshold:     {type: float, low: 15.0, high: 45.0}
+
+  bb_period:         {type: int,   low: 10,   high: 50}
+  bb_std:            {type: float, low: 1.5,  high: 3.5}
+  bb_squeeze_pct:    {type: float, low: 0.10, high: 0.70}
+
+  range_lookback:    {type: int,   low: 20,   high: 120}
+  entry_buffer:      {type: float, low: 0.05, high: 2.0}
+  entry_zone_pct:    {type: float, low: 0.05, high: 0.50}
+  min_range_atr_mult: {type: float, low: 0.5,  high: 4.0}
+  max_range_atr_mult: {type: float, low: 5.0,  high: 60.0}
+
+  tick_vel_window:   {type: int,   low: 10,   high: 60}
+  tick_vel_max:      {type: float, low: 0.5,  high: 15.0}
+  spread_z_window:   {type: int,   low: 100,  high: 400}
+  spread_z_max:      {type: float, low: 1.5,  high: 5.0}
+  tick_imbalance_window:        {type: int,   low: 5,    high: 30}
+  tick_imbalance_max_opposite:  {type: float, low: 0.2,  high: 0.9}
+
+  cooldown_minutes:  {type: float, low: 0.0,  high: 180.0}
+  tp_max_range_pct:  {type: float, low: 0.5,  high: 1.5}
+
+  # SL/TP módok — az Optuna választhat a 3 közül, és a hozzá tartozó paramétert
+  # is hangolja. Ha pl. range_pct nyer, az atr_mult / dollars értékek nem hatnak.
+  sl_mode:           {type: categorical, choices: [fixed_dollars, atr_mult, range_pct]}
+  tp_mode:           {type: categorical, choices: [fixed_dollars, atr_mult, range_pct]}
+
+  sl_dollars:        {type: float, low: 2.0,  high: 20.0}
+  tp_dollars:        {type: float, low: 3.0,  high: 30.0}
+  sl_atr_mult:       {type: float, low: 0.5,  high: 3.5}
+  tp_atr_mult:       {type: float, low: 0.8,  high: 5.0}
+  sl_range_pct:      {type: float, low: 0.20, high: 0.80}
+  tp_range_pct:      {type: float, low: 0.40, high: 1.20}
+
+engine:
+  max_hold_seconds:  {type: int,   low: 600,  high: 14400}
+  sizing_mode:       {type: categorical, choices: [fixed_lot, fixed_risk]}
+  risk_pct:          {type: float, low: 0.002, high: 0.03}

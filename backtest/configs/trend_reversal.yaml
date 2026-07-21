@@ -1,0 +1,93 @@
+strategy: trend_reversal
+
+data:
+  tick_parquet: ./data/tick_data_GOLD.parquet
+  epic: GOLD
+
+engine:
+  candle_tf: 5min
+  max_gap_factor: 2.0
+  min_segment_duration: 1h
+  max_open_positions: 1            # live: max 1 pozíció (semelyik irány)
+  allow_multiple_directions: false
+  max_hold_seconds: 7200
+  slippage: 0.05
+  commission_per_trade: 0.0
+
+  # Trailing stop (engine-szintű): konzisztencia a live trailing-gel
+  trailing_mode: atr_trail         # none | break_even | atr_trail
+  trail_atr_mult: 1.5
+  break_even_trigger_atr_mult: 1.0
+
+  # Pozíció méretezés (engine-szintű, közös mindkét stratégián)
+  sizing_mode: score_scaled        # from_strategy | fixed_lot | score_scaled | fixed_risk
+  fixed_lot_size: 1.0              # fixed_lot módban
+  min_order_size: 0.8              # min clamp + score_scaled módban alsó határ
+  max_order_size: 1.6              # max clamp + score_scaled módban felső határ
+  risk_pct: 0.01                   # fixed_risk módban: equity ennyi %-át kockáztatjuk / trade
+  equity: 10000.0                  # fixed_risk módban a (notionalis) tőke
+
+strategy_params:
+  # ── Timeframe ──
+  candle_tf: 5min
+  htf_candle_tf: 1h
+  require_htf_align: true          # csak akkor lép be, ha HTF EMA-k egyetértenek
+  htf_ema_fast: 9
+  htf_ema_slow: 21
+
+  # ── Indikátorok ──
+  ema_fast: 9
+  ema_slow: 21
+  rsi_period: 7
+  atr_period: 14
+  adx_period: 14
+  min_adx: 20.0                    # ADX ez alatt = oldalazás, nincs trade
+
+  # ── Trend & reversal mode ──
+  enable_trend_mode: true
+  enable_reversal_mode: false      # igazi reversal: oversold + RSI fordul; default off
+  rsi_long_level: 55
+  rsi_short_level: 45
+  rsi_oversold: 30.0
+  rsi_overbought: 70.0
+  rsi_recovery_min_delta: 1.0
+
+  # ── Belépés mode ──
+  entry_mode: immediate            # immediate | pullback
+  pullback_max_dist_ema_atr: 0.5   # pullback módban max ennyi ATR-re lehet az ár az ema_fast-tól
+
+  # ── Tick szűrők ──
+  tick_buffer_size: 20
+  tick_confirm_window: 4
+  tick_min_imbalance: 0.40
+  max_spread_atr: 0.18
+  spread_z_window: 200
+  spread_z_max: 2.5
+
+  # ── Score ──
+  # NB: min/max_order_size és lot_size mostantól az engine: blokkban; a stratégia
+  # csak a score-t számolja, a tényleges size az engine.sizing_mode szerint.
+  score_threshold: 0.35
+  adx_strong_threshold: 35.0       # score bónusz teteje
+  htf_align_score_bonus: 0.15
+  atr_extreme_pct: 0.95            # ATR percentile, ami fölött extrém-vol
+  atr_extreme_penalty: 0.10
+
+  # ── SL/TP ──
+  sl_mode: atr_mult                # fixed_dollars | atr_mult
+  tp_mode: atr_mult
+  sl_dollars: 5.0
+  tp_dollars: 10.0
+  sl_atr_mult: 1.5
+  tp_atr_mult: 2.0
+  min_sl_distance: 0.5
+
+  # ── Cooldown ──
+  cooldown_minutes: 20.0           # SL után az adott irányba ennyi percig tilt
+
+  # ── Session ──
+  enable_session_filter: false
+  trading_start_hour_utc: 7
+  trading_end_hour_utc: 18
+
+  decision_interval_sec: 15.0

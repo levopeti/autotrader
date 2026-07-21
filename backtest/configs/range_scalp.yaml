@@ -1,0 +1,71 @@
+strategy: range_scalp
+
+data:
+  tick_parquet: ./data/tick_data_GOLD.parquet
+  epic: GOLD
+
+engine:
+  candle_tf: 5min                 # gap detektorhoz az LTF
+  max_gap_factor: 2.0
+  min_segment_duration: 2h        # több candle kell warmup-ra
+  max_open_positions: 1           # live-ban max 1 pozíció — ne lehessen ellentétes irány egyszerre
+  allow_multiple_directions: false
+  max_hold_seconds: 7200
+  slippage: 0.10
+  commission_per_trade: 0.0
+
+  # Pozíció méretezés
+  sizing_mode: fixed_lot           # from_strategy | fixed_lot | score_scaled | fixed_risk
+  fixed_lot_size: 1.0
+  min_order_size: 0.5
+  max_order_size: 3.0
+  risk_pct: 0.01
+  equity: 10000.0
+
+strategy_params:
+  ltf_candle_tf: 5min
+  htf_candle_tf: 1h
+
+  adx_period: 14
+  adx_threshold: 25.0
+  bb_period: 20
+  bb_std: 2.0
+  bb_squeeze_pct: 0.35
+  range_lookback: 50
+  entry_buffer: 0.30
+  entry_zone_pct: 0.30           # csak az alsó/felső 30%-ban lép be (range közepe tilos)
+  min_range_atr_mult: 1.5        # range < 1.5×ATR → range_too_narrow
+  max_range_atr_mult: 30.0       # range > 30×ATR → range_too_wide
+
+  tick_vel_window: 20
+  tick_vel_max: 3.0
+  spread_z_window: 200
+  spread_z_max: 2.5
+  tick_imbalance_window: 10
+  tick_imbalance_max_opposite: 0.5  # BUY zónában |imb| < -0.5 → blokk
+
+  cooldown_minutes: 30           # SL után ennyi percig az adott irányba nincs új belépés
+  tp_max_range_pct: 1.0          # tp_dist <= range × 1.0 (csak nem-range_pct módban)
+
+  # NB: lot_size mostantól az engine.fixed_lot_size mezőben.
+  # A stratégia csak Decision.size=1.0-val jelzi a nyitási szándékot.
+
+  # SL/TP módok: {fixed_dollars | atr_mult | range_pct}
+  # - fixed_dollars: a *_dollars értéket használja
+  # - atr_mult:      sl/tp = atr × *_atr_mult  (volatility-aware)
+  # - range_pct:     sl/tp = (resistance - support) × *_range_pct  (mean-reversion target)
+  sl_mode: atr_mult
+  tp_mode: range_pct
+
+  sl_dollars: 5.0          # csak fixed_dollars módban
+  tp_dollars: 8.0          # csak fixed_dollars módban
+  sl_atr_mult: 1.5         # csak atr_mult módban (SL = ATR × 1.5)
+  tp_atr_mult: 2.5         # csak atr_mult módban
+  sl_range_pct: 0.40       # csak range_pct módban (SL = range × 40%)
+  tp_range_pct: 0.70       # range túlpartjáig ~70%
+  atr_period: 14
+  min_sl_distance: 0.10    # bármely módban: alsó határ a SL-re
+
+  enable_session_filter: true
+  session_start: 7
+  session_end: 21

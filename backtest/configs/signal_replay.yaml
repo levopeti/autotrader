@@ -1,0 +1,40 @@
+strategy: signal_replay
+
+data:
+  tick_parquet: ./data/tick_data_GOLD.parquet
+  epic: GOLD
+
+engine:
+  candle_tf: 1min                 # a signal_replay nem épít candle-t, csak a gap-detektor használja
+  max_gap_factor: 5.0
+  min_segment_duration: 30min
+  max_open_positions: 1
+  allow_multiple_directions: false
+  max_hold_seconds: 7200          # élő POSITION_TIMEOUT_SEC megfelelője nyitás után
+  slippage: 0.05
+  commission_per_trade: 0.0
+
+  # Trailing — az élő bot trailingStop: True-t használ
+  trailing_mode: none             # none | break_even | atr_trail
+  trail_atr_mult: 1.5
+  break_even_trigger_atr_mult: 1.0
+
+  # Sizing — fixed_lot, mert a jel meghatározza a TP/SL-t (a "score" 1.0 minden jelre)
+  sizing_mode: fixed_lot
+  fixed_lot_size: 1.0
+  min_order_size: 0.5
+  max_order_size: 3.0
+  risk_pct: 0.01
+  equity: 10000.0
+
+strategy_params:
+  signals_dir: ./data/signals      # SignalArchive jsonl-jei itt
+  candle_tf: 1min                  # kompatibilitás a runner-rel (nem használt indikátorra)
+
+  # channels: ha üres, minden csatorna; egyébként chat_id lista
+  # channels: [-1002001216034, -1003496306840]
+  channels: null
+
+  signal_timeout_minutes: 15.0     # zónába-várás max ennyi (a live POSITION_TIMEOUT_SEC == 15 min)
+  tp_idx: 0                        # 0 = első/legközelebbi TP; -1 = legtávolabbi
+  entry_zone_expand: 1.0           # ± dollár buffer a parsed zónához (a live entry_zone_expand=1)

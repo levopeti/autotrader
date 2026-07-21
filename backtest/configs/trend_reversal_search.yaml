@@ -1,0 +1,61 @@
+# TrendReversal — hangolható paraméterek
+
+strategy_params:
+  # ── Indikátorok ──
+  ema_fast:                {type: int,   low: 5,    high: 25}
+  ema_slow:                {type: int,   low: 20,   high: 60}
+  rsi_period:              {type: int,   low: 5,    high: 21}
+  atr_period:              {type: int,   low: 7,    high: 28}
+  adx_period:              {type: int,   low: 7,    high: 28}
+  min_adx:                 {type: float, low: 10.0, high: 35.0}
+
+  # ── HTF EMA-k ──
+  htf_ema_fast:            {type: int,   low: 5,    high: 25}
+  htf_ema_slow:            {type: int,   low: 20,   high: 60}
+  require_htf_align:       {type: categorical, choices: [true, false]}
+
+  # ── Trend & reversal ──
+  enable_trend_mode:       {type: categorical, choices: [true, false]}
+  enable_reversal_mode:    {type: categorical, choices: [true, false]}
+  rsi_long_level:          {type: float, low: 50.0, high: 65.0}
+  rsi_short_level:         {type: float, low: 35.0, high: 50.0}
+  rsi_oversold:            {type: float, low: 20.0, high: 35.0}
+  rsi_overbought:          {type: float, low: 65.0, high: 80.0}
+  rsi_recovery_min_delta:  {type: float, low: 0.5,  high: 5.0}
+
+  # ── Belépés mode ──
+  entry_mode:              {type: categorical, choices: [immediate, pullback]}
+  pullback_max_dist_ema_atr: {type: float, low: 0.1, high: 1.5}
+
+  # ── Tick szűrők ──
+  tick_buffer_size:        {type: int,   low: 10,   high: 40}
+  tick_confirm_window:     {type: int,   low: 2,    high: 10}
+  tick_min_imbalance:      {type: float, low: 0.20, high: 0.80}
+  max_spread_atr:          {type: float, low: 0.05, high: 0.40}
+  spread_z_window:         {type: int,   low: 100,  high: 400}
+  spread_z_max:            {type: float, low: 1.5,  high: 5.0}
+
+  # ── Score ──
+  score_threshold:         {type: float, low: 0.25, high: 0.70}
+  adx_strong_threshold:    {type: float, low: 25.0, high: 50.0}
+  htf_align_score_bonus:   {type: float, low: 0.0,  high: 0.30}
+  atr_extreme_penalty:     {type: float, low: 0.0,  high: 0.30}
+
+  # ── SL/TP módok ──
+  sl_mode:                 {type: categorical, choices: [fixed_dollars, atr_mult]}
+  tp_mode:                 {type: categorical, choices: [fixed_dollars, atr_mult]}
+  sl_dollars:              {type: float, low: 2.0,  high: 20.0}
+  tp_dollars:              {type: float, low: 3.0,  high: 30.0}
+  sl_atr_mult:             {type: float, low: 0.5,  high: 3.0}
+  tp_atr_mult:             {type: float, low: 0.8,  high: 4.0}
+
+  # ── Cooldown ──
+  cooldown_minutes:        {type: float, low: 0.0,  high: 120.0}
+
+engine:
+  max_hold_seconds:                {type: int, low: 600, high: 14400}
+  trailing_mode:                   {type: categorical, choices: [none, break_even, atr_trail]}
+  trail_atr_mult:                  {type: float, low: 0.5,  high: 3.0}
+  break_even_trigger_atr_mult:     {type: float, low: 0.3,  high: 2.5}
+  sizing_mode:                     {type: categorical, choices: [fixed_lot, score_scaled, fixed_risk]}
+  risk_pct:                        {type: float, low: 0.002, high: 0.03}
