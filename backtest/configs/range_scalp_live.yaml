@@ -1,0 +1,93 @@
+strategy: range_scalp
+
+# ============================================================================
+# SAFE_PLUS recept (Stage 4 walk-forward validált, 2026-07-23)
+# ============================================================================
+# Full-period backtest (71 nap GOLD):
+#   35 trade | 60% win | +274$ PnL | PF 2.73 | DD -37$
+# Walk-forward OOS (13 × 10-nap):
+#   +89 $/hó, 85% pozitív ablak, worst -8$, max DD -21$
+#
+# Stage-onkénti fejlesztések vs korábbi live config:
+#   Stage 2: adx_threshold 40→48 (+15%), tp_range_pct 0.50→0.55 (+16%)
+#   Stage 3: sl_atr_mult 1.5→1.4 (DD-jobb), atr_period 14→7,
+#            max_range_atr_mult 30→10, bb_squeeze_pct 0.35→0.45 (+22%)
+#   Stage 4: safe_plus kombinált eredmény (yolo overfit lett walk-forward-on)
+#
+# Fontos: sl_mode range_pct → atr_mult váltás — a range_pct-tel a
+# sl_atr_mult inaktív. Backtest szerint gyakorlatilag azonos DD-t ad.
+# ============================================================================
+
+data:
+  tick_parquet: ./data/tick_data_GOLD.parquet
+  epic: GOLD
+
+engine:
+  candle_tf: 5min
+  max_gap_factor: 2.0
+  min_segment_duration: 2h
+  max_open_positions: 1
+  allow_multiple_directions: false
+  max_hold_seconds: 7200
+  slippage: 0.10
+  commission_per_trade: 0.0
+
+  sizing_mode: fixed_lot
+  fixed_lot_size: 2.0
+  min_order_size: 0.5
+  max_order_size: 3.0
+  equity: 10000.0
+
+strategy_params:
+  ltf_candle_tf: 5min
+  htf_candle_tf: 1h
+
+  # Ranging definíció
+  adx_period: 14
+  adx_threshold: 48.0              # ← Stage 2 (volt 40)
+  bb_period: 20
+  bb_std: 2.0
+  bb_squeeze_pct: 0.45             # ← Stage 3 (volt 0.35)
+  range_lookback: 50
+  entry_buffer: 0.30
+  entry_zone_pct: 0.30
+  min_range_atr_mult: 1.5
+  max_range_atr_mult: 10.0         # ← Stage 3 (volt 30)
+
+  # Tick szűrők
+  tick_vel_window: 20
+  tick_vel_max: 3.0
+  spread_z_window: 200
+  spread_z_max: 2.5
+  tick_imbalance_window: 10
+  tick_imbalance_max_opposite: 0.5
+
+  cooldown_minutes: 30
+  tp_max_range_pct: 1.0
+
+  # SL/TP mód — ATR-alapú SL, range-arányos TP
+  sl_mode: atr_mult                # ← váltás range_pct-ről (azonos DD)
+  tp_mode: range_pct
+  sl_range_pct: 0.20               # (nem aktív ebben a módban)
+  tp_range_pct: 0.55               # ← Stage 2 (volt 0.50)
+
+  # SL/TP paraméterek
+  sl_dollars: 5.0
+  tp_dollars: 8.0
+  sl_atr_mult: 1.4                 # ← Stage 3 (volt 1.5) — aktív!
+  tp_atr_mult: 2.5
+  atr_period: 7                    # ← Stage 3 (volt 14)
+  min_sl_distance: 0.10
+
+  # Session (UTC)
+  enable_session_filter: true
+  session_start: 7
+  session_end: 21
+
+  # Trend filter
+  trend_filter_enabled: true
+  trend_filter_tf: 4h
+  trend_filter_ema_fast: 9
+  trend_filter_ema_slow: 21
+
+  signal_confirmations: 10
