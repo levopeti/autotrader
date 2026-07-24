@@ -285,7 +285,11 @@ async def state_save_loop(kf: KalmanFilter):
 # ─────────────────────────────────────────────────────────────
 
 async def ws_listener(cst: str, tok: str, prices: PriceHolder):
-    """1 WS session, 2 subscription (GOLD + SILVER). Auto-reconnect."""
+    """1 WS session, 2 subscription (GOLD + SILVER). Auto-reconnect.
+    Watchdog: ha 90s-en belül nem érkezik quote, force reconnect (Capital
+    zombie-WS elleni védelem, 2026-07-24 incident: TCP él, quote-ok nem
+    érkeznek 11+ óráig)."""
+    QUOTE_TIMEOUT_SEC = 90.0     # ha nincs quote ennyi idő alatt, reconnect
     while True:
         try:
             async with websockets.connect(WS_URL, ping_interval=20, ping_timeout=20) as ws:
@@ -298,7 +302,14 @@ async def ws_listener(cst: str, tok: str, prices: PriceHolder):
                     }))
                     logger.info("[WS] feliratkozás → %s", epic)
 
-                async for raw in ws:
+                # explicit recv-with-timeout loop (watchdog beépítve)
+                while True:
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=QUOTE_TIMEOUT_SEC)
+                    except asyncio.TimeoutError:
+                        logger.warning("[WS] %.0fs óta nincs quote — force reconnect",
+                                        QUOTE_TIMEOUT_SEC)
+                        break    # exit inner loop → close ws → outer while reconnect
                     try:
                         data = json.loads(raw)
                     except Exception:
