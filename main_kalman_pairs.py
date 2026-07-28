@@ -72,6 +72,37 @@ WARMUP_BARS = 2000
 
 
 @dataclass
+class SessionHolder:
+    """Mutable Capital session tokens. A refresh_loop 12h-onként újralogin,
+    a ws_listener és ping loop mindig ezt olvassák."""
+    cst: Optional[str] = None
+    security_token: Optional[str] = None
+
+
+async def capital_login_async(session: aiohttp.ClientSession) -> tuple[str, str]:
+    headers = {"X-CAP-API-KEY": API_KEY, "Content-Type": "application/json"}
+    payload = {"identifier": IDENTIFIER, "password": PASSWORD, "encryptedPassword": False}
+    async with session.post(f"{BASE_URL}/api/v1/session", json=payload, headers=headers) as r:
+        r.raise_for_status()
+        return r.headers.get("CST"), r.headers.get("X-SECURITY-TOKEN")
+
+
+async def session_refresh_loop(sess_holder: SessionHolder, interval_sec: float = 12 * 3600):
+    """Periodikus újralogin, hogy a CST/X-SECURITY-TOKEN ne járjon le."""
+    while True:
+        await asyncio.sleep(interval_sec)
+        try:
+            async with aiohttp.ClientSession() as sess:
+                cst, tok = await capital_login_async(sess)
+            sess_holder.cst = cst
+            sess_holder.security_token = tok
+            logger.info("[SESSION] refresh OK — új CST/token")
+        except Exception as e:
+            logger.warning("[SESSION] refresh hiba: %s (5 perc múlva újra)", e)
+            await asyncio.sleep(300)
+
+
+@dataclass
 class PriceHolder:
     """Tick-buffer: mindkét symbolra tárol egy latest mid + ts párost."""
     gold_mid: Optional[float] = None
@@ -284,14 +315,35 @@ async def state_save_loop(kf: KalmanFilter):
 # WebSocket subscriber
 # ─────────────────────────────────────────────────────────────
 
-async def ws_listener(cst: str, tok: str, prices: PriceHolder):
-    """1 WS session, 2 subscription (GOLD + SILVER). Auto-reconnect.
+async def _capital_ping_loop(ws, sess_holder: SessionHolder, interval_sec: float = 9 * 60):
+    """9-percenként Capital-specific application-level ping. Ez tartja életben
+    a WS session-t (nem elég a websockets könyvtár TCP-ping-je!). Ha kimarad,
+    ~20 perc múlva a Capital csendben leállítja a quote-stream-et.
+    Lásd main_capital_consensus.py::ping_loop mintájára."""
+    while True:
+        await asyncio.sleep(interval_sec)
+        try:
+            await ws.send(json.dumps({
+                "destination": "ping", "correlationId": 99,
+                "cst": sess_holder.cst,
+                "securityToken": sess_holder.security_token,
+            }))
+        except Exception:
+            return    # ws closed, outer reconnect majd kezeli
+
+
+async def ws_listener(sess_holder: SessionHolder, prices: PriceHolder):
+    """1 WS session, 2 subscription (GOLD + SILVER). Auto-reconnect + watchdog.
     Watchdog: ha 90s-en belül nem érkezik quote, force reconnect (Capital
     zombie-WS elleni védelem, 2026-07-24 incident: TCP él, quote-ok nem
-    érkeznek 11+ óráig)."""
-    QUOTE_TIMEOUT_SEC = 90.0     # ha nincs quote ennyi idő alatt, reconnect
+    érkeznek — session lejárta miatt).
+
+    A session_holder-t olvassuk minden reconnect-nél, így a session_refresh_loop
+    frissítései automatikusan érvényesülnek."""
+    QUOTE_TIMEOUT_SEC = 90.0
     while True:
         try:
+            cst, tok = sess_holder.cst, sess_holder.security_token
             async with websockets.connect(WS_URL, ping_interval=20, ping_timeout=20) as ws:
                 for i, epic in enumerate([GOLD_EPIC, SILVER_EPIC], 1):
                     await ws.send(json.dumps({
@@ -302,28 +354,31 @@ async def ws_listener(cst: str, tok: str, prices: PriceHolder):
                     }))
                     logger.info("[WS] feliratkozás → %s", epic)
 
-                # explicit recv-with-timeout loop (watchdog beépítve)
-                while True:
-                    try:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=QUOTE_TIMEOUT_SEC)
-                    except asyncio.TimeoutError:
-                        logger.warning("[WS] %.0fs óta nincs quote — force reconnect",
-                                        QUOTE_TIMEOUT_SEC)
-                        break    # exit inner loop → close ws → outer while reconnect
-                    try:
-                        data = json.loads(raw)
-                    except Exception:
-                        continue
-                    if data.get("destination") != "quote":
-                        continue
-                    payload = data.get("payload", {}) or {}
-                    epic = payload.get("epic", "")
-                    bid = payload.get("bid")
-                    ask = payload.get("ofr") or payload.get("ask") or payload.get("offer")
-                    if bid is None or ask is None:
-                        continue
-                    ts = datetime.now(timezone.utc)
-                    prices.update(epic, float(bid), float(ask), ts)
+                ping_task = asyncio.create_task(_capital_ping_loop(ws, sess_holder))
+                try:
+                    while True:
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=QUOTE_TIMEOUT_SEC)
+                        except asyncio.TimeoutError:
+                            logger.warning("[WS] %.0fs óta nincs quote — force reconnect",
+                                            QUOTE_TIMEOUT_SEC)
+                            break
+                        try:
+                            data = json.loads(raw)
+                        except Exception:
+                            continue
+                        if data.get("destination") != "quote":
+                            continue
+                        payload = data.get("payload", {}) or {}
+                        epic = payload.get("epic", "")
+                        bid = payload.get("bid")
+                        ask = payload.get("ofr") or payload.get("ask") or payload.get("offer")
+                        if bid is None or ask is None:
+                            continue
+                        ts = datetime.now(timezone.utc)
+                        prices.update(epic, float(bid), float(ask), ts)
+                finally:
+                    ping_task.cancel()
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -358,17 +413,20 @@ async def main():
         kf.save_state(STATE_PATH)
         logger.info("[STATE] warmup-utáni state elmentve → %s", STATE_PATH)
 
-    # Auth
+    # Auth — SessionHolder mutable, hogy a session_refresh_loop is frissítse
+    sess_holder = SessionHolder()
     async with aiohttp.ClientSession() as sess:
-        cst, tok = await capital_login(sess)
+        sess_holder.cst, sess_holder.security_token = await capital_login_async(sess)
+    logger.info("[AUTH] bejelentkezés OK")
 
     prices = PriceHolder()
 
     # Kick off tasks
     tasks = [
-        asyncio.create_task(ws_listener(cst, tok, prices)),
+        asyncio.create_task(ws_listener(sess_holder, prices)),
         asyncio.create_task(kalman_loop(kf, prices, log_file)),
         asyncio.create_task(state_save_loop(kf)),
+        asyncio.create_task(session_refresh_loop(sess_holder)),
     ]
     try:
         await asyncio.gather(*tasks)
