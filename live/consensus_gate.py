@@ -77,26 +77,29 @@ class RecipeRules:
 # növel kezdéskor. Ha élesben az ANN+Traderz setup beigazolódik, VIP utólag
 # visszakapcsolható egy új sweep után.
 PER_CHANNEL_RULES: dict[int, RecipeRules] = {
-    # ANN: ATR-recept, NINCS trend-filter (counter-trend reverziókat csinál).
-    # Backtest sweep megerősítette: ANN-en a trend-filter ront (+117 → −43).
-    CH_ANN:     RecipeRules(tp_idx_only=0, expected_tp_count=1,
-                            use_atr_levels=True, atr_sl_mult=2.0, atr_tp_mult=3.0,
-                            trend_filter=False),
-    # Traderz: TP5 cél + TP-ladder + 1h EMA9/21 trend-filter.
-    # Backtest: PF 1.88 → 2.29, max DD −34 → −16, PnL +93 → +72 (kevesebb
-    # trade, jobb minőség). [[trend-filter-effects]]
-    CH_TRADERZ: RecipeRules(tp_idx_only=4, expected_tp_count=5,
-                            ladder_trigger_tp_idx=2, ladder_dest_tp_idx=0,
-                            trend_filter=True),
-    # VIP: tp_idx=2 (3. legközelebbi TP = TP3) + trend-filter.
-    # Frissebb sweep (2026-07-09, ~50 nap): +136$, PF 1.52, DD −46$.
-    # LADDER NEM segít VIP-en (a TP-eloszlás miatt).
+    # ── DEPLOY 2026-07-29: "combo_2_shared_tp2" — WF validated best-of-best.
+    # Backtest 68 nap: +$144/hó IS, +$162/hó OOS (12-ablak WF, 83% pos, worst -$6).
+    # ANN kihagyva: naiv baseline szerint -$70/hó bármely tp_idx-szel.
+    # Uniform tp_idx=2 (3. legközelebbi TP), közös 4h trend filter.
+    #
+    # VIP: tp_idx=2 = 3. legközelebbi (VIP általában 6 TP-t küld).
     CH_VIP:     RecipeRules(tp_idx_only=2, expected_tp_count=6,
                             trend_filter=True),
+    # Traderz: tp_idx=2 = 3. legközelebbi (Traderz 5 TP-t küld).
+    # LADDER KIKAPCSOLVA — a combo_2 uniform tp_idx=2 esetén nem kell.
+    CH_TRADERZ: RecipeRules(tp_idx_only=2, expected_tp_count=5,
+                            trend_filter=True),
+    # ANN: SZÁNDÉKOSAN KIHAGYVA (unknown_channel reject).
+    # Naiv baseline mérés (2026-07-28): ANN mindig -$70/hó (42% wr, PF 0.69)
+    # bármely tp_idx-szel. A régi news-filter-es setup se javított rajta.
+    # [[ann-news-filter-interaction]] már ok volt: news-driven vesztő signalek.
+    # 2026-07-29 mérés: ANN kikapcsolás valójában megéri egyszerűen naiv setup mellett.
 }
 
 # Mely csatornák vesznek részt a consensus-detektálásban
-CONSENSUS_CHANNELS: set[int] = {CH_ANN, CH_TRADERZ}
+# combo_2 setup: consensus_required=False, tehát ez már nem használt,
+# de tartsuk fenn a szemantikát: VIP+Traderz mindkettő aktív, mindkettő számít.
+CONSENSUS_CHANNELS: set[int] = {CH_VIP, CH_TRADERZ}
 
 
 @dataclass

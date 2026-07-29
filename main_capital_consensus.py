@@ -62,7 +62,7 @@ POLL_INTERVAL_SEC     = 5 * 60
 BACKFILL_INTERVAL_SEC = 15
 OPEN_INTERVAL_SEC     = 2.0
 CONFIRM_TIMEOUT_SEC   = 30.0
-POSITION_TIMEOUT_SEC  = 15 * 60
+POSITION_TIMEOUT_SEC  = 60 * 60    # combo_2 deploy 2026-07-29: 15 → 60 min
 RETRY_DELAY_SEC       = 10.0
 MAX_RETRIES           = 5
 
@@ -75,11 +75,11 @@ ATR_BARS_FETCH      = 100          # elég sok a warm-up + smoothinghoz
 # Trend-filter (Traderz-en aktív; lásd RecipeRules.trend_filter):
 # 1h EMA9 vs EMA21 alapján. Backtest sweep szerint a (1h, 9, 21) a legjobb
 # kombináció Traderz-re.
-TREND_TF_RESOLUTION = "HOUR"
+TREND_TF_RESOLUTION = "HOUR_4"     # combo_2 deploy 2026-07-29: 1h → 4h (WF optimum)
 TREND_EMA_FAST      = 9
 TREND_EMA_SLOW      = 21
-TREND_REFRESH_SEC   = 300.0        # 5 percenként újraszámol (1h candle-ek)
-TREND_BARS_FETCH    = 100          # bőven elég a 21-perces EMA-hoz
+TREND_REFRESH_SEC   = 900.0        # 15 percenként újraszámol (4h candle-ek)
+TREND_BARS_FETCH    = 100          # bőven elég a 21-periódusú EMA-hoz
 
 # Sizing — a ZMQ signal `size` mezőjét ezzel szorozzuk a consensus multipliker
 # UTÁN. A backtest 1.0 base lot-tal volt; ha kisebb startot szeretnél, állítsd
@@ -421,11 +421,12 @@ async def stream(epic: str, base_url: str, ws_url: str, dry_run: bool) -> None:
         cfg=GateConfig(consensus_window_min=60.0,
                        consensus_price_tol=5.0,
                        consensus_size_mult=2.0,
-                       # Walk-forward validated 2026-07-24:
-                       # 08-16 UTC block: signal_replay OOS +$62 vs -$140 baseline
-                       # (∆+$202 71 napon). Fedi az US pre-market + morning session
-                       # news window-ot (CPI/PPI/Retail 12:30, Powell 14:00 UTC)
-                       news_blocked_hours=[[8, 16]]),
+                       # combo_2 deploy 2026-07-29: NEWS FILTER KIKAPCSOLVA.
+                       # Naiv baseline sweep megmutatta hogy VIP-en +$52 vs -$22
+                       # a szűk 11-15 UTC vs 08-16 UTC filter; Traderz-en a semmi
+                       # a legjobb (+$35 vs +$12 08-16-tal). VIP+Traderz combo
+                       # WF: +$162/hó OOS filter nélkül.
+                       news_blocked_hours=[]),
         atr_provider=atr_holder.callable_for_gate(),
         trend_provider=trend_holder.callable_for_gate(),
     )
