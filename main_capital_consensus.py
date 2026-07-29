@@ -204,8 +204,8 @@ async def trend_refresh_loop(
                         prices = data.get("prices", []) if isinstance(data, dict) else []
                         t = _compute_trend_from_prices(prices, TREND_EMA_FAST, TREND_EMA_SLOW)
                         await holder.set(t)
-                        logger.info("[TREND] frissítve | %s 1h EMA%d/%d → %s",
-                                    epic, TREND_EMA_FAST, TREND_EMA_SLOW, t or "?")
+                        logger.info("[TREND] frissítve | %s %s EMA%d/%d → %s",
+                                    epic, TREND_TF_RESOLUTION, TREND_EMA_FAST, TREND_EMA_SLOW, t or "?")
             except Exception as e:
                 logger.warning("[TREND] hiba: %s", e)
             await asyncio.sleep(TREND_REFRESH_SEC)
