@@ -60,12 +60,14 @@ WS_URL   = "wss://api-streaming-capital.backend-capital.com/connect"
 #   → EWMA R: pozitív MINDKÉT regime-ben, 11× jobb DD
 #
 # EWMA α=0.0005: nagyon lassú R adaptáció (~2000 bar half-life)
-# Konzervatív K_entry=3.0 (több signal helyett minőség)
+# 2026-08-05: K_ENTRY 3.0 → 2.0 (élő 7 nap → 0 zárt trade; backtest 3.0 → 3/hó túl ritka)
+#   K=2.0 backtest: 9.4 trade/hó, +$149/hó, PF 6.19, DD -$73, worst MAE -$103
+#   Még mindig 27%-kal jobb DD mint fix-R (K=2.0, x=0.5), 67%-a fix-R PnL-nek
 EWMA_ALPHA     = 0.0005    # R adaptáció sebessége
 KALMAN_Q_ALPHA = 0.0        # nem használjuk (EWMA módban Q arányos R-hez)
 KALMAN_Q_BETA  = 0.0        # nem használjuk (EWMA módban Q arányos R-hez)
 KALMAN_R       = 16.0       # kezdő R (warmup fogja felülírni)
-K_ENTRY        = 3.0        # konzervatívabb küszöb
+K_ENTRY        = 2.0        # 2026-08-05 3.0→2.0 (több trade, még mindig védett)
 K_EXIT         = 0.3        # szigorúbb exit (mean-revert erős kritérium)
 MAX_HOLD_BARS  = 41 * 60    # 41h = 2460 × 1-min bar
 UPDATE_INTERVAL_SEC = 60    # 1-min aligned Kalman step
