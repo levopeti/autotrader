@@ -148,6 +148,14 @@ class GateOutput:
     # ezekkel a szintekkel mozgatja az SL-t REST-en keresztül.
     ladder_trigger_price: Optional[float] = None
     ladder_dest_price: Optional[float] = None
+    # A TÉNYLEGESEN kereskedett target raw tp_idx (1-based, price-ascending
+    # a parser konvenciója szerint). A CSV-be ezt kell írni — NEM az aktuális
+    # bejövő ZMQ-üzenet tp_idx-ét, mert a gate re-emit + cancel-replace loop
+    # miatt az utolsó bejövő raw_tp_idx (általában a legmagasabb price-rank)
+    # felülírná a target-et. Számítás:
+    #   BUY:  target_raw = rule.tp_idx_only + 1
+    #   SELL: target_raw = rule.expected_tp_count - rule.tp_idx_only
+    target_raw_tp_idx: Optional[int] = None
 
 
 class ConsensusGate:
@@ -420,6 +428,16 @@ class ConsensusGate:
                 ladder_dest_price,
             )
 
+        # Target raw tp_idx (1-based, price-ascending) — a CSV-hez és a
+        # downstream logikához. Direction-függő konverzió a distance-rank-ból:
+        #   BUY:  raw = distance + 1
+        #   SELL: raw = n_tp - distance
+        # (a rule.tp_idx_only garantáltan nem None, mert idáig eljutottunk)
+        if direction.upper() == "BUY":
+            target_raw_tp_idx = int(rule.tp_idx_only) + 1
+        else:
+            target_raw_tp_idx = int(rule.expected_tp_count) - int(rule.tp_idx_only)
+
         return GateOutput(
             accept=True,
             reason="ok",
@@ -431,4 +449,5 @@ class ConsensusGate:
             consensus_partner=partner_name,
             ladder_trigger_price=ladder_trigger_price,
             ladder_dest_price=ladder_dest_price,
+            target_raw_tp_idx=target_raw_tp_idx,
         )

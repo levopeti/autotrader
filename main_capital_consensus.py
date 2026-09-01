@@ -353,7 +353,10 @@ async def zmq_listener(
                     zone_high=out.zone_high,
                     tp=out.tp,
                     sl=out.sl,
-                    tp_idx=int(p["tp_idx"]),
+                    # A gate a TARGET raw tp_idx-et küldi vissza — NEM az
+                    # aktuális ZMQ-üzenet p["tp_idx"]-ét, ami a re-emit loop
+                    # miatt torzul (positions.csv-tp_idx-bug fix, 2026-09-01).
+                    tp_idx=out.target_raw_tp_idx if out.target_raw_tp_idx is not None else int(p["tp_idx"]),
                     raw_text=str(p["raw_text"]),
                     send_date=str(p["send_date"]),
                     edited=bool(p.get("edited", False)),
