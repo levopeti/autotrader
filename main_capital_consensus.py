@@ -394,14 +394,26 @@ async def zmq_listener(
 
 # ─── AUTH ────────────────────────────────────────────────────────────────────
 
-async def create_session(base_url: str) -> tuple[str, str]:
+async def create_session(base_url: str, account_id: Optional[str] = None) -> tuple[str, str]:
     headers = {"X-CAP-API-KEY": API_KEY, "Content-Type": "application/json"}
     body    = {"identifier": IDENTIFIER, "password": PASSWORD, "encryptionKey": False}
     async with aiohttp.ClientSession() as s:
         async with s.post(f"{base_url}/api/v1/session", headers=headers, json=body) as r:
             r.raise_for_status()
-            logger.info("[AUTH] bejelentkezés OK")
-            return r.headers["CST"], r.headers["X-SECURITY-TOKEN"]
+            login = await r.json()
+            cst = r.headers["CST"]; token = r.headers["X-SECURITY-TOKEN"]
+        current = str(login.get("currentAccountId"))
+        logger.info("[AUTH] bejelentkezés OK (currentAccountId=%s)", current)
+        # Account switch, ha explicit account_id-t kaptunk és nem az az aktuális
+        if account_id and str(account_id) != current:
+            auth_headers = {**headers, "CST": cst, "X-SECURITY-TOKEN": token}
+            async with s.put(f"{base_url}/api/v1/session", headers=auth_headers,
+                             json={"accountId": str(account_id)}) as r2:
+                if r2.status >= 400:
+                    body_txt = await r2.text()
+                    raise RuntimeError(f"account switch failed ({r2.status}): {body_txt}")
+                logger.info("[AUTH] account switch → %s", account_id)
+        return cst, token
 
 
 async def ping_loop(ws, cst, token) -> None:
@@ -413,8 +425,9 @@ async def ping_loop(ws, cst, token) -> None:
 
 # ─── FŐ STREAM ───────────────────────────────────────────────────────────────
 
-async def stream(epic: str, base_url: str, ws_url: str, dry_run: bool) -> None:
-    cst, token = await create_session(base_url)
+async def stream(epic: str, base_url: str, ws_url: str, dry_run: bool,
+                 account_id: Optional[str] = None) -> None:
+    cst, token = await create_session(base_url, account_id=account_id)
     manager    = PositionManager(base_url=base_url, cst=cst, token=token)
     open_queue: asyncio.Queue[QueueItem] = asyncio.Queue()
 
@@ -498,6 +511,8 @@ def parse_args():
                    help="ÉLES számla használata (default: demo)")
     p.add_argument("--no-dry-run", action="store_true",
                    help="Tényleges pozíció nyitás (default: csak logol)")
+    p.add_argument("--account", default=None,
+                   help="Capital account_id override (különben preferred=True fiók)")
     return p.parse_args()
 
 
@@ -509,8 +524,9 @@ def main():
     dry_run = not args.no_dry_run
 
     logger.info("=" * 72)
-    logger.info("MODE: %s | DRY-RUN: %s | EPIC: %s",
-                "ÉLES" if args.live else "DEMO", dry_run, args.epic)
+    logger.info("MODE: %s | DRY-RUN: %s | EPIC: %s | ACCOUNT: %s",
+                "ÉLES" if args.live else "DEMO", dry_run, args.epic,
+                args.account or "(preferred)")
     logger.info("=" * 72)
     if args.live and not dry_run:
         logger.warning("⚠️  ÉLES számlán fogunk pozíciót nyitni — Ctrl+C 5 mp-en belül a megálláshoz")
@@ -522,7 +538,8 @@ def main():
     import traceback as _tb
     while True:
         try:
-            asyncio.run(stream(args.epic, base_url, ws_url, dry_run))
+            asyncio.run(stream(args.epic, base_url, ws_url, dry_run,
+                               account_id=args.account))
             # asyncio.run normál visszatérése (pl. WS lezárta a stream-loopot)
             # — szándékon kívüli, restart kell
             logger.error("[MAIN] stream() exception nélkül kilépett — 60 mp múlva újra")
