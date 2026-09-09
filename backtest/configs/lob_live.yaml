@@ -34,7 +34,7 @@ strategy_params:
   asia_end_hour: 7
   entry_end_hour: 13
   session_close_hour: 20
-  buffer_datr_frac: 0.05
+  buffer_datr_frac: 0.03   # 2026-09-09 WF: mind a 8 ablak b0.03-at választotta
   max_range_datr_mult: 1.2
   datr_period: 14
   trend_ema: 20
