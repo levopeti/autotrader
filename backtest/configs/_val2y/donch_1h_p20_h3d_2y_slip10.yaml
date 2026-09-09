@@ -1,0 +1,33 @@
+data:
+  epic: GOLD
+  tick_parquet: ./data/tick_pseudo_XAU_2y.parquet
+engine:
+  allow_multiple_directions: false
+  break_even_trigger_atr_mult: 1.0
+  candle_tf: 1h
+  commission_per_trade: 0.0
+  equity: 10000.0
+  fixed_lot_size: 1.0
+  max_gap_factor: 2.0
+  max_hold_seconds: 259200
+  max_open_positions: 1
+  max_order_size: 3.0
+  min_order_size: 0.5
+  min_segment_duration: 1h
+  sizing_mode: fixed_lot
+  slippage: 0.1
+  trail_atr_mult: 2.0
+  trailing_mode: atr_trail
+strategy: donchian_breakout
+strategy_params:
+  atr_period: 14
+  breakout_buffer: 0.0
+  candle_tf: 1h
+  cooldown_bars: 5
+  donchian_period: 20
+  sl_atr_mult: 2.0
+  tp_atr_mult: 20.0
+  trend_ema_fast: 9
+  trend_ema_slow: 21
+  trend_filter_enabled: true
+  trend_filter_tf: 4h
