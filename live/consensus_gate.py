@@ -67,6 +67,14 @@ class RecipeRules:
     # nincs trend-filter (ANN-en pl. KIFEJEZETTEN ne legyen, mert ott
     # counter-trend reverzió a működő mechanizmus).
     trend_filter: bool = False
+    # Per-channel news_blocked_hours override — ha megadva (nem None), akkor
+    # a GateConfig.news_blocked_hours GLOBÁLIS érték helyett ez alkalmazódik
+    # csak erre a csatornára. Így pl. ANN-nek szűrhetünk 08-16 UTC-t, de
+    # VIP+Traderz-en globálisan kikapcsolva maradhat a filter.
+    # None → a globális GateConfig.news_blocked_hours érvényes
+    # [] → nincs news filter (override, felülírja a globálist)
+    # [[8,16]] → 08-15 UTC block csak ezen a csatornán
+    news_blocked_hours: Optional[List[List[int]]] = None
 
 
 # A backtest eredménye alapján.
@@ -79,21 +87,33 @@ class RecipeRules:
 PER_CHANNEL_RULES: dict[int, RecipeRules] = {
     # ── DEPLOY 2026-07-29: "combo_2_shared_tp2" — WF validated best-of-best.
     # Backtest 68 nap: +$144/hó IS, +$162/hó OOS (12-ablak WF, 83% pos, worst -$6).
-    # ANN kihagyva: naiv baseline szerint -$70/hó bármely tp_idx-szel.
-    # Uniform tp_idx=2 (3. legközelebbi TP), közös 4h trend filter.
+    # 2026-09-09 sweep (120d): tp=2 tr=4h news=off → VIP +$144, Traderz +$140.
+    # Uniform tp_idx=2 (3. legközelebbi TP), közös 4h trend filter, news filter off.
     #
     # VIP: tp_idx=2 = 3. legközelebbi (VIP általában 6 TP-t küld).
     CH_VIP:     RecipeRules(tp_idx_only=2, expected_tp_count=6,
-                            trend_filter=True),
+                            trend_filter=True,
+                            news_blocked_hours=[]),   # explicit no news filter
     # Traderz: tp_idx=2 = 3. legközelebbi (Traderz 5 TP-t küld).
     # LADDER KIKAPCSOLVA — a combo_2 uniform tp_idx=2 esetén nem kell.
     CH_TRADERZ: RecipeRules(tp_idx_only=2, expected_tp_count=5,
-                            trend_filter=True),
-    # ANN: SZÁNDÉKOSAN KIHAGYVA (unknown_channel reject).
-    # Naiv baseline mérés (2026-07-28): ANN mindig -$70/hó (42% wr, PF 0.69)
-    # bármely tp_idx-szel. A régi news-filter-es setup se javított rajta.
-    # [[ann-news-filter-interaction]] már ok volt: news-driven vesztő signalek.
-    # 2026-07-29 mérés: ANN kikapcsolás valójában megéri egyszerűen naiv setup mellett.
+                            trend_filter=True,
+                            news_blocked_hours=[]),   # explicit no news filter
+    # ── 2026-09-09 ANN VISSZAKAPCSOLVA külön regime-robusztus recepttel.
+    # Sweep 120d: tp=0, trend=off, news=[[8,16]], ATR-override → +$117 total,
+    # 57% WR, PF 1.96, minden regime pozitív (BULL+$20 / BEAR+$27 / SIDE+$71).
+    # WF 4 ablak: 3/4 OOS pozitív. Ez az EGYETLEN regime-robusztus ANN config.
+    #
+    # Kulcs-paraméterek:
+    #   - tp_idx=0 (ANN 1-TP-s csatorna, mindegy hogyan indexeljük)
+    #   - trend_filter=OFF (ANN counter-trend reverzió, trend filter árt)
+    #   - news_blocked_hours=[[8,16]] UTC (per-channel override; VIP+Traderz-nél OFF marad)
+    #   - use_atr_levels=True: az ANN saját SL-je élesben túl szűk → 2×ATR SL, 3×ATR TP
+    CH_ANN:     RecipeRules(tp_idx_only=0, expected_tp_count=1,
+                            trend_filter=False,       # ANN nem szereti trend filter-t
+                            news_blocked_hours=[[8, 16]],   # per-channel news block
+                            use_atr_levels=True,
+                            atr_sl_mult=2.0, atr_tp_mult=3.0),
 }
 
 # Mely csatornák vesznek részt a consensus-detektálásban
@@ -305,15 +325,19 @@ class ConsensusGate:
                 return GateOutput(False, reason=f"trend_filter({trend}!={direction})")
 
         # 1.7) News avoidance filter (UTC óra-blokk, opcionális weekday-szűrő).
+        # Precedencia: rule.news_blocked_hours (per-channel override) > cfg.news_blocked_hours (globális).
         # Walk-forward validated 2026-07-24: [[8,16]] → OOS +$62 vs -$140 (∆+$202).
-        if self.cfg.news_blocked_hours:
-            # weekday check (ha megadott)
+        # 2026-09-09 sweep: ANN-en news=[[8,16]] KELL (+$27 vs -$111 avg), VIP+Traderz-en OFF kell.
+        active_news_blocks = (rule.news_blocked_hours
+                              if rule.news_blocked_hours is not None
+                              else self.cfg.news_blocked_hours)
+        if active_news_blocks:
             wd_ok = True
             if self.cfg.news_blocked_weekdays is not None:
                 wd_ok = ts.weekday() in self.cfg.news_blocked_weekdays
             if wd_ok:
                 h = ts.hour
-                for rng in self.cfg.news_blocked_hours:
+                for rng in active_news_blocks:
                     if int(rng[0]) <= h < int(rng[1]):
                         return GateOutput(False, reason=f"news_window({h}h in {rng})")
 
