@@ -27,6 +27,22 @@ class Position:
     atr_at_open: Optional[float] = None        # trailing kalkulációhoz
     break_even_done: bool = False              # break_even módban: már mozgott-e BE-re
 
+    # TP-ladder trailing (mode == "tp_ladder"): amint az ár eléri a ladder_trigger_price-t
+    # (favourable irányban), az SL felugrik ladder_dest_price-re. Egyszer aktiválódik.
+    ladder_trigger_price: Optional[float] = None
+    ladder_dest_price: Optional[float] = None
+    ladder_done: bool = False
+
+    # Layered TP — egy signal-ból több réteg-pozíció
+    parent_trade_id: Optional[int] = None      # a "signal-szintű" pozíció id-je (= az 1. réteg trade_id-je)
+    layer_idx: int = 0                         # 0 = egyetlen v. 1. réteg
+    layer_count: int = 1                       # ennyi réteg van összesen
+    layer_tp_pct: float = 1.0                  # ennek a rétegnek a TP-pct-je (1.0 = full TP)
+    layer_size_pct: float = 1.0                # a teljes méret hányada
+
+    # Idő-alapú kényszer-zárás (session-stratégiákhoz, pl. london_breakout)
+    exit_at_ts: Optional[pd.Timestamp] = None
+
     exit_ts: Optional[pd.Timestamp] = None
     exit_price: Optional[float] = None
     exit_reason: Optional[str] = None
@@ -71,18 +87,27 @@ def check_exit(
     """
     _apply_trailing(pos, bid, ask, trailing_mode, trail_atr_mult, break_even_trigger_atr_mult)
 
+    def _sl_reason() -> str:
+        if pos.ladder_done:
+            return "LADDER_SL"
+        if pos.break_even_done and abs(pos.sl - pos.entry_price) < 1e-6:
+            return "BE_STOP"
+        return "SL"
+
     if pos.direction == "BUY":
         if bid <= pos.sl:
-            reason = "BE_STOP" if pos.break_even_done and abs(pos.sl - pos.entry_price) < 1e-6 else "SL"
-            return pos.sl, reason
+            return pos.sl, _sl_reason()
         if pos.tp is not None and bid >= pos.tp:
             return pos.tp, "TP"
     else:
         if ask >= pos.sl:
-            reason = "BE_STOP" if pos.break_even_done and abs(pos.sl - pos.entry_price) < 1e-6 else "SL"
-            return pos.sl, reason
+            return pos.sl, _sl_reason()
         if pos.tp is not None and ask <= pos.tp:
             return pos.tp, "TP"
+
+    if pos.exit_at_ts is not None and ts >= pos.exit_at_ts:
+        exit_price = bid if pos.direction == "BUY" else ask
+        return exit_price, "TIME_EXIT"
 
     if max_hold_seconds is not None:
         held = (ts - pos.entry_ts).total_seconds()
@@ -101,7 +126,28 @@ def _apply_trailing(
     trail_atr_mult: float,
     be_trigger_atr_mult: float,
 ) -> None:
-    if mode == "none" or pos.atr_at_open is None or pos.atr_at_open <= 0:
+    if mode == "none":
+        return
+
+    # tp_ladder mód NEM igényli az ATR-t — a stratégia által adott
+    # absztrakt ár-szinteket használja
+    if mode == "tp_ladder":
+        if pos.ladder_done:
+            return
+        if pos.ladder_trigger_price is None or pos.ladder_dest_price is None:
+            return
+        if pos.direction == "BUY":
+            if bid >= pos.ladder_trigger_price:
+                pos.sl = max(pos.sl, pos.ladder_dest_price)
+                pos.ladder_done = True
+        else:
+            if ask <= pos.ladder_trigger_price:
+                pos.sl = min(pos.sl, pos.ladder_dest_price)
+                pos.ladder_done = True
+        return
+
+    # ATR-alapú módok
+    if pos.atr_at_open is None or pos.atr_at_open <= 0:
         return
 
     if pos.direction == "BUY":

@@ -88,6 +88,13 @@ class LiveConfig:
     # trendben minden tick új SL-t PUT-olna (Capital 429 kockázat).
     trail_min_step_atr_frac: float = 0.10
 
+    # Ownership state-file: a runner ide perzisztálja a SAJÁT nyitott
+    # deal_id-jait. Restart-adopt CSAK az itt szereplő deal-eket veszi fel —
+    # így két stratégia (pl. donchian + london_breakout) futhat ugyanazon a
+    # fiókon/epicen anélkül, hogy egymás pozícióit adoptálnák.
+    # None → adopt minden epic-pozícióra (régi viselkedés, single-strategy fiók).
+    ownership_state_path: Optional[str] = None
+
 
 class LiveRunner:
     def __init__(
@@ -173,6 +180,7 @@ class LiveRunner:
             except Exception:
                 atr_now = None
 
+        owned = self._owned_deal_ids()
         for p in live:
             pos_node = p.get("position", {})
             market = p.get("market", {})
@@ -180,6 +188,13 @@ class LiveRunner:
                 continue
             deal_id = str(pos_node.get("dealId"))
             if not deal_id or deal_id in self._open_positions:
+                continue
+            # Ownership-szűrő: ha van state file, csak a saját deal-jeinket
+            # adoptáljuk (másik stratégia pozícióját békén hagyjuk)
+            if self.live_cfg.ownership_state_path is not None and deal_id not in owned:
+                self.log.log_text(
+                    f"[ADOPT_SKIP] deal_id={deal_id} nem a miénk (ownership state) — kihagyva"
+                )
                 continue
             direction = pos_node.get("direction")
             entry_price = pos_node.get("level")
@@ -214,6 +229,7 @@ class LiveRunner:
                 verified_open=True,
             )
             self._open_positions[deal_id] = pos
+            self._save_ownership()
             self.log.log_text(
                 f"[ADOPT_STARTUP] {direction} @ {entry_price:.4f} size={pos.size:.3f} "
                 f"sl={sl_level:.4f} deal_id={deal_id} entry_ts={pos.entry_ts} "
@@ -229,6 +245,31 @@ class LiveRunner:
                 "sl": sl_level,
                 "atr_estimated": atr_now,
             })
+
+    # ── ownership state (több stratégia egy fiókon) ──
+
+    def _owned_deal_ids(self) -> set:
+        import json as _json
+        from pathlib import Path as _P
+        p = self.live_cfg.ownership_state_path
+        if not p:
+            return set()
+        try:
+            return set(_json.loads(_P(p).read_text()).get("deal_ids", []))
+        except Exception:
+            return set()
+
+    def _save_ownership(self) -> None:
+        import json as _json
+        from pathlib import Path as _P
+        p = self.live_cfg.ownership_state_path
+        if not p:
+            return
+        try:
+            ids = [d for d in self._open_positions.keys() if not d.startswith("PENDING-")]
+            _P(p).write_text(_json.dumps({"deal_ids": ids}))
+        except Exception as e:
+            logger.warning("ownership state írás hiba: %s", e)
 
     # ── tick stream ──
 
@@ -415,6 +456,7 @@ class LiveRunner:
                         tp=tp_level,
                         initial_sl=sl_level,
                         atr_at_open=atr_at_open,
+                        exit_at_ts=decision.exit_at_ts,
                         open_indicators=dict(ind),
                         parent_trade_id=parent_trade_id,
                         layer_idx=layer_idx,
@@ -486,6 +528,7 @@ class LiveRunner:
                 tp=tp_level,
                 initial_sl=sl_level,
                 atr_at_open=atr_at_open,
+                exit_at_ts=decision.exit_at_ts,
                 open_indicators=dict(ind),
                 parent_trade_id=parent_trade_id,
                 layer_idx=layer_idx,
@@ -494,6 +537,7 @@ class LiveRunner:
                 layer_size_pct=layer_size_pct,
             )
             self._open_positions[pos.deal_id] = pos
+            self._save_ownership()
 
             self.log.log_text(
                 f"[OPEN] {pos.direction} layer={layer_idx}/{len(self._tp_layers)-1} "
@@ -590,6 +634,25 @@ class LiveRunner:
         # A backtest 3 nap után kényszer-zár; élőben ugyanezt tesszük aktív
         # DELETE-tel. Csak verified pozícióra (PENDING-et a GC kezeli).
         max_hold = self.engine_cfg.max_hold_seconds
+        now0 = _utcnow_naive()
+        for pos in list(self._open_positions.values()):
+            if not pos.verified_open:
+                continue
+            if pos.exit_at_ts is not None and now0 >= pos.exit_at_ts:
+                self.log.log_text(
+                    f"[TIME_EXIT] trade_id={pos.trade_id} exit_at={pos.exit_at_ts} — "
+                    f"session-zárás, kényszer-close"
+                )
+                try:
+                    loop0 = asyncio.get_event_loop()
+                    await loop0.run_in_executor(
+                        None, self.client.close_position, pos.deal_id
+                    )
+                except Exception as e:
+                    logger.warning("TIME_EXIT close hiba (%s): %s — következő ciklusban újra",
+                                   pos.deal_id, e)
+                    continue
+                await self._close_position(pos, exit_reason="TIME_EXIT")
         if max_hold:
             now0 = _utcnow_naive()
             for pos in list(self._open_positions.values()):
@@ -648,6 +711,7 @@ class LiveRunner:
                 pos.verified_open = True
                 pos.missing_poll_count = 0
                 self._open_positions[real_deal_id] = pos
+                self._save_ownership()
                 continue
 
             if pos.deal_id in live_deal_ids:
@@ -775,6 +839,7 @@ class LiveRunner:
             "transaction": tx,
         })
         del self._open_positions[pos.deal_id]
+        self._save_ownership()
         try:
             self.strategy.on_position_closed(pos)
         except Exception:

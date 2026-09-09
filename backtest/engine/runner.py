@@ -20,7 +20,7 @@ class EngineConfig:
     candle_tf: str
     max_gap_factor: float = 2.0
     min_segment_duration: str = "1h"
-    max_open_positions: int = 1
+    max_open_positions: int = 1                  # NB: signal-szintű, nem réteg-szintű
     allow_multiple_directions: bool = False
     max_hold_seconds: Optional[float] = None
     slippage: float = 0.0
@@ -36,6 +36,62 @@ class EngineConfig:
     max_order_size: float = 10.0
     risk_pct: float = 0.01
     equity: float = 10_000.0
+
+    # Layered TP (scaled exit): egy signal → N pozíció rétegezett TP-vel,
+    # közös SL-lel (induláskor). tp_layers a tp_distance %-os szintjei (pl.
+    # [0.5, 0.75, 1.0] → 3 réteg). tp_layer_size_pcts a teljes méret hányada
+    # rétegenként (össz = 1.0). Default: 1 réteg = teljes TP (régi viselkedés).
+    tp_layers: Optional[List[float]] = None
+    tp_layer_size_pcts: Optional[List[float]] = None
+
+
+# Optuna számára: stringből választható preset-ek a tp_layers-hez.
+TP_LAYERS_PRESETS = {
+    "single":          ([1.0],            [1.0]),
+    "two_equal":       ([0.5, 1.0],       [0.5, 0.5]),
+    "three_equal":     ([0.5, 0.75, 1.0], [0.33, 0.34, 0.33]),
+    "three_weighted":  ([0.5, 0.75, 1.0], [0.5, 0.3, 0.2]),
+    "four_layer":      ([0.4, 0.7, 1.0, 1.3], [0.4, 0.3, 0.2, 0.1]),
+}
+
+
+def apply_tp_layers_preset(engine_block: dict) -> None:
+    """
+    Ha a config-ban `tp_layers_preset` mező van (pl. az Optuna tette be),
+    azt feloldja konkrét `tp_layers` + `tp_layer_size_pcts` listákra.
+    """
+    preset = engine_block.pop("tp_layers_preset", None)
+    if preset is None:
+        return
+    if preset not in TP_LAYERS_PRESETS:
+        raise ValueError(f"Ismeretlen tp_layers_preset: {preset} ({list(TP_LAYERS_PRESETS)})")
+    layers, sizes = TP_LAYERS_PRESETS[preset]
+    engine_block["tp_layers"] = list(layers)
+    engine_block["tp_layer_size_pcts"] = list(sizes)
+
+
+def _resolve_tp_layers(
+    tp_layers: Optional[List[float]],
+    tp_layer_size_pcts: Optional[List[float]],
+) -> tuple[List[float], List[float]]:
+    """
+    Layer-listák normalizálása.
+    Üres/None → egyetlen 1.0 layer (régi single-TP viselkedés).
+    Size-pctek nélkül → uniform szétosztás.
+    """
+    layers = list(tp_layers) if tp_layers else [1.0]
+    if tp_layer_size_pcts:
+        if len(tp_layer_size_pcts) != len(layers):
+            raise ValueError(f"tp_layer_size_pcts hossza ({len(tp_layer_size_pcts)}) "
+                             f"!= tp_layers hossza ({len(layers)})")
+        sizes = list(tp_layer_size_pcts)
+        total = sum(sizes)
+        if total <= 0:
+            raise ValueError(f"tp_layer_size_pcts összege <= 0: {total}")
+        sizes = [s / total for s in sizes]
+    else:
+        sizes = [1.0 / len(layers)] * len(layers)
+    return layers, sizes
 
 
 class BacktestRunner:
@@ -53,6 +109,12 @@ class BacktestRunner:
             risk_pct=engine_cfg.risk_pct,
             equity=engine_cfg.equity,
         )
+        self._tp_layers, self._tp_layer_size_pcts = _resolve_tp_layers(
+            engine_cfg.tp_layers, engine_cfg.tp_layer_size_pcts
+        )
+        # Signal-szintű "logikai pozíció" számláló — egy signal akkor is 1, ha N rétegre bontódik.
+        # A max_open_positions ezt korlátozza, nem az egyedi réteg-pozíciókat.
+        self._open_signal_groups: Dict[int, int] = {}    # trade_id → még nyitott rétegek száma
 
     def run(self, ticks: pd.DataFrame) -> Dict:
         segments = detect_segments(
@@ -128,7 +190,10 @@ class BacktestRunner:
                 self._close_position(pos, exit_info[0], ts, exit_info[1])
             open_positions = still_open
 
-            if len(open_positions) >= self.cfg.max_open_positions:
+            # Signal-szintű limit: az `open_positions` réteg-pozíciókat tartalmaz, de a
+            # max_open_positions logikai signal-okra vonatkozik (egy signal = N réteg).
+            open_signal_count = len({p.parent_trade_id or p.id for p in open_positions})
+            if open_signal_count >= self.cfg.max_open_positions:
                 continue
 
             decision = self.strategy.on_tick(ts, bid, ask)
@@ -152,8 +217,11 @@ class BacktestRunner:
             if not decision.allow_trade or decision.direction is None or not decision.size:
                 continue
 
+            # allow_multiple_directions: ha False, akkor BUY és SELL nem lehet
+            # egyszerre nyitva — vagyis ellentétes irányú nyitott pozíció esetén
+            # blokkolunk. Azonos irányt a `max_open_positions` korlátoz.
             if not self.cfg.allow_multiple_directions:
-                if any(p.direction == decision.direction for p in open_positions):
+                if any(p.direction != decision.direction for p in open_positions):
                     continue
 
             self._open_position(decision, decision_event_id, ts, bid, ask, open_positions)
@@ -177,13 +245,13 @@ class BacktestRunner:
         open_positions: List[Position],
     ) -> None:
         direction = decision.direction
-        size = compute_size(
+        total_size = compute_size(
             self._sizing,
             strategy_size=float(decision.size or 0.0),
             score=decision.score,
             sl_distance=decision.sl_distance,
         )
-        if size <= 0:
+        if total_size <= 0:
             return
         sl_dist = float(decision.sl_distance or 0.0)
         tp_dist = float(decision.tp_distance) if decision.tp_distance is not None else None
@@ -191,11 +259,9 @@ class BacktestRunner:
         if direction == "BUY":
             entry = ask + self.cfg.slippage
             sl = entry - sl_dist
-            tp = (entry + tp_dist) if tp_dist is not None else None
         else:
             entry = bid - self.cfg.slippage
             sl = entry + sl_dist
-            tp = (entry - tp_dist) if tp_dist is not None else None
 
         ind = decision.indicators or {}
         atr_at_open = ind.get("atr") or ind.get("atr_ltf")
@@ -204,41 +270,112 @@ class BacktestRunner:
         except (TypeError, ValueError):
             atr_at_open = None
 
-        self._trade_seq += 1
-        pos = Position(
-            id=self._trade_seq,
-            decision_event_id=decision_event_id,
-            open_event_id=None,
-            direction=direction,
-            entry_ts=ts,
-            entry_price=entry,
-            size=size,
-            sl=sl,
-            tp=tp,
-            score=float(decision.score or 0.0),
-            open_indicators=dict(decision.indicators),
-            open_note=decision.reason,
-            initial_sl=sl,
-            atr_at_open=atr_at_open,
-        )
+        # Multi-TP a stratégiától: abszolút TP-távolságok listája. Ha jelen van,
+        # felülírja az engine.tp_layers-t. A layer_tp_pct ekkor "logikai" mező
+        # az event-logban (= abszolút_tp_dist / max_tp_dist).
+        if decision.tp_distances:
+            decision_tp_dists = [float(d) for d in decision.tp_distances if d is not None and d > 0]
+        else:
+            decision_tp_dists = None
 
-        pos.open_event_id = self.logger.log_open({
-            "ts": ts.isoformat(),
-            "epic": self.cfg.epic,
-            "strategy": self.strategy.name,
-            "trade_id": pos.id,
-            "decision_event_id": decision_event_id,
-            "direction": direction,
-            "entry_price": entry,
-            "size": size,
-            "sl": sl,
-            "tp": tp,
-            "score": pos.score,
-            "indicators": pos.open_indicators,
-        })
+        if decision_tp_dists:
+            layers_abs = decision_tp_dists
+            n_layers = len(layers_abs)
+            # Méret-súlyok: ha az engine_cfg-ben passzol a hossz, használjuk; egyébként uniform
+            if len(self._tp_layer_size_pcts) == n_layers:
+                layer_sizes_pct = self._tp_layer_size_pcts
+            else:
+                layer_sizes_pct = [1.0 / n_layers] * n_layers
+            max_tp_dist = max(layers_abs)
+            layers_pct_for_log = [d / max_tp_dist for d in layers_abs]
+        else:
+            layers_abs = None
+            layer_sizes_pct = self._tp_layer_size_pcts
+            layers_pct_for_log = self._tp_layers
 
-        self.positions.append(pos)
-        open_positions.append(pos)
+        parent_trade_id: Optional[int] = None
+
+        for layer_idx, (layer_tp_pct, layer_size_pct) in enumerate(zip(layers_pct_for_log, layer_sizes_pct)):
+            layer_size = total_size * layer_size_pct
+            if layer_size <= 0:
+                continue
+            # Tényleges abszolút TP-távolság
+            if layers_abs is not None:
+                this_tp_dist = layers_abs[layer_idx]
+            elif tp_dist is not None and layer_tp_pct > 0:
+                this_tp_dist = tp_dist * layer_tp_pct
+            else:
+                this_tp_dist = None
+
+            if this_tp_dist is not None:
+                tp = (entry + this_tp_dist) if direction == "BUY" else (entry - this_tp_dist)
+            else:
+                tp = None
+
+            self._trade_seq += 1
+            if parent_trade_id is None:
+                parent_trade_id = self._trade_seq
+
+            # TP-ladder árak: a Decision-ben favourable-irány távolságok érkeznek
+            ladder_trig_price = None
+            ladder_dest_price = None
+            ld_trig = decision.ladder_trigger_distance
+            ld_dest = decision.ladder_dest_distance
+            if ld_trig is not None and ld_dest is not None and ld_trig > 0 and ld_dest > 0:
+                if direction == "BUY":
+                    ladder_trig_price = entry + float(ld_trig)
+                    ladder_dest_price = entry + float(ld_dest)
+                else:
+                    ladder_trig_price = entry - float(ld_trig)
+                    ladder_dest_price = entry - float(ld_dest)
+
+            pos = Position(
+                id=self._trade_seq,
+                decision_event_id=decision_event_id,
+                open_event_id=None,
+                direction=direction,
+                entry_ts=ts,
+                entry_price=entry,
+                size=layer_size,
+                sl=sl,
+                tp=tp,
+                score=float(decision.score or 0.0),
+                open_indicators=dict(decision.indicators),
+                open_note=decision.reason,
+                initial_sl=sl,
+                atr_at_open=atr_at_open,
+                parent_trade_id=parent_trade_id,
+                layer_idx=layer_idx,
+                layer_count=len(layers_pct_for_log),
+                layer_tp_pct=layer_tp_pct,
+                layer_size_pct=layer_size_pct,
+                ladder_trigger_price=ladder_trig_price,
+                ladder_dest_price=ladder_dest_price,
+                exit_at_ts=decision.exit_at_ts,
+            )
+
+            pos.open_event_id = self.logger.log_open({
+                "ts": ts.isoformat(),
+                "epic": self.cfg.epic,
+                "strategy": self.strategy.name,
+                "trade_id": pos.id,
+                "parent_trade_id": parent_trade_id,
+                "layer_idx": layer_idx,
+                "layer_count": len(layers_pct_for_log),
+                "layer_tp_pct": layer_tp_pct,
+                "layer_size_pct": layer_size_pct,
+                "decision_event_id": decision_event_id,
+                "direction": direction,
+                "entry_price": entry,
+                "size": layer_size,
+                "sl": sl,
+                "tp": tp,
+                "score": pos.score,
+                "indicators": pos.open_indicators,
+            })
+
+            self.positions.append(pos)
+            open_positions.append(pos)
 
     def _close_position(
         self,
@@ -257,6 +394,11 @@ class BacktestRunner:
             "epic": self.cfg.epic,
             "strategy": self.strategy.name,
             "trade_id": pos.id,
+            "parent_trade_id": pos.parent_trade_id or pos.id,
+            "layer_idx": pos.layer_idx,
+            "layer_count": pos.layer_count,
+            "layer_tp_pct": pos.layer_tp_pct,
+            "layer_size_pct": pos.layer_size_pct,
             "decision_event_id": pos.decision_event_id,
             "open_event_id": pos.open_event_id,
             "direction": pos.direction,
