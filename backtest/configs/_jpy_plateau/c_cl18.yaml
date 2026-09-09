@@ -1,0 +1,29 @@
+data:
+  epic: USDJPY
+  tick_parquet: ./data/tick_pseudo_USDJPY_3y.parquet
+engine:
+  allow_multiple_directions: false
+  candle_tf: 1h
+  commission_per_trade: 0.0
+  equity: 10000.0
+  fixed_lot_size: 100.0
+  max_gap_factor: 3.0
+  max_hold_seconds: 57600
+  max_open_positions: 1
+  max_order_size: 1000.0
+  min_order_size: 1.0
+  min_segment_duration: 1h
+  sizing_mode: fixed_lot
+  slippage: 0.015
+  trailing_mode: none
+strategy: london_breakout
+strategy_params:
+  asia_end_hour: 7
+  buffer_datr_frac: 0.1
+  datr_period: 14
+  entry_end_hour: 13
+  max_range_datr_mult: 1.2
+  min_asia_bars: 6
+  session_close_hour: 18
+  trend_ema: 20
+  trend_filter_enabled: true
