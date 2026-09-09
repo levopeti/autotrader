@@ -83,6 +83,11 @@ class LiveConfig:
     confirm_retry_attempts: int = 5
     confirm_retry_delay_seconds: float = 0.5
 
+    # Trailing SL REST PUT throttle: csak akkor küldünk PUT-ot, ha az új SL
+    # legalább ennyi × atr_at_open-nel jobb a jelenleginél. Enélkül erős
+    # trendben minden tick új SL-t PUT-olna (Capital 429 kockázat).
+    trail_min_step_atr_frac: float = 0.10
+
 
 class LiveRunner:
     def __init__(
@@ -138,11 +143,92 @@ class LiveRunner:
         self.strategy.on_segment_start(ctx)
         self.log.log_text(f"Strategy started: {self.strategy.name} | mode: {'DRY-RUN' if self.live_cfg.dry_run else 'LIVE'}")
 
+        # Restart-safety: ha a brókernél már van nyitott pozíció ezen az epicen
+        # (pl. előző process-példány nyitotta), adoptáljuk — különben a
+        # max_open=1 nem látná, a trailing/max_hold nem kezelné, és duplán
+        # nyithatnánk.
+        if not self.live_cfg.dry_run:
+            await self._adopt_existing_positions()
+
         await asyncio.gather(
             self._tick_loop(),
             self._candle_refresh_loop(),
             self._position_poll_loop(),
         )
+
+    async def _adopt_existing_positions(self) -> None:
+        loop = asyncio.get_event_loop()
+        try:
+            live = await loop.run_in_executor(None, self.client.get_open_positions)
+        except Exception as e:
+            logger.warning("startup position fetch hiba: %s", e)
+            return
+        # Friss ATR a trailinghez az épp betöltött candle-ökből
+        atr_now: Optional[float] = None
+        ltf = self._candles_mtf.get(self.engine_cfg.candle_tf)
+        if ltf is not None and len(ltf) > 20:
+            from backtest.indicators.candle_indicators import atr as _atr_fn
+            try:
+                atr_now = float(_atr_fn(ltf["high"], ltf["low"], ltf["close"], 14).iloc[-1])
+            except Exception:
+                atr_now = None
+
+        for p in live:
+            pos_node = p.get("position", {})
+            market = p.get("market", {})
+            if market.get("epic") != self.epic:
+                continue
+            deal_id = str(pos_node.get("dealId"))
+            if not deal_id or deal_id in self._open_positions:
+                continue
+            direction = pos_node.get("direction")
+            entry_price = pos_node.get("level")
+            size = pos_node.get("size")
+            stop_level = pos_node.get("stopLevel")
+            created = pos_node.get("createdDateUTC") or pos_node.get("createdDate")
+            if direction not in ("BUY", "SELL") or entry_price is None or size is None:
+                continue
+            entry_price = float(entry_price)
+            # SL fallback ha a brókernél nincs stopLevel
+            if stop_level is not None:
+                sl_level = float(stop_level)
+            elif atr_now:
+                sl_dist = self.engine_cfg.trail_atr_mult * atr_now
+                sl_level = entry_price - sl_dist if direction == "BUY" else entry_price + sl_dist
+            else:
+                sl_level = entry_price * (0.99 if direction == "BUY" else 1.01)
+            self._trade_seq += 1
+            pos = LivePosition(
+                trade_id=self._trade_seq,
+                deal_id=deal_id,
+                deal_ref=str(pos_node.get("dealReference") or deal_id),
+                decision_event_id="adopted",
+                direction=direction,
+                entry_ts=_to_utc_naive(created) if created else _utcnow_naive(),
+                entry_price=entry_price,
+                size=float(size),
+                sl=sl_level,
+                tp=float(pos_node["profitLevel"]) if pos_node.get("profitLevel") is not None else None,
+                initial_sl=sl_level,
+                atr_at_open=atr_now,
+                verified_open=True,
+            )
+            self._open_positions[deal_id] = pos
+            self.log.log_text(
+                f"[ADOPT_STARTUP] {direction} @ {entry_price:.4f} size={pos.size:.3f} "
+                f"sl={sl_level:.4f} deal_id={deal_id} entry_ts={pos.entry_ts} "
+                f"(előző process-példány pozíciója)"
+            )
+            self.log.log_event("adopt_startup", {
+                "ts": _utcnow_naive().isoformat(),
+                "trade_id": pos.trade_id,
+                "deal_id": deal_id,
+                "direction": direction,
+                "entry_price": entry_price,
+                "size": pos.size,
+                "sl": sl_level,
+                "atr_estimated": atr_now,
+            })
 
     # ── tick stream ──
 
@@ -453,6 +539,13 @@ class LiveRunner:
         )
         if new_sl is None:
             return
+        # PUT-throttle: csak érdemi SL-javulásnál küldünk REST hívást — enélkül
+        # erős trendben minden tick PUT-olna (429 kockázat). A trail szemantikán
+        # nem változtat, csak durvább lépcsőkben követ.
+        if pos.atr_at_open:
+            min_step = self.live_cfg.trail_min_step_atr_frac * pos.atr_at_open
+            if abs(new_sl - pos.sl) < min_step:
+                return
         # SL elmozdult — REST PUT (kivéve dry-run)
         if not self.live_cfg.dry_run:
             try:
@@ -492,6 +585,34 @@ class LiveRunner:
             return
         if self.live_cfg.dry_run:
             return    # dry-run: a runner maga nem zárhat le, későbbi feature
+
+        # ── max_hold_seconds érvényesítés (backtest TIMEOUT megfelelője) ──
+        # A backtest 3 nap után kényszer-zár; élőben ugyanezt tesszük aktív
+        # DELETE-tel. Csak verified pozícióra (PENDING-et a GC kezeli).
+        max_hold = self.engine_cfg.max_hold_seconds
+        if max_hold:
+            now0 = _utcnow_naive()
+            for pos in list(self._open_positions.values()):
+                if not pos.verified_open:
+                    continue
+                if (now0 - pos.entry_ts).total_seconds() >= float(max_hold):
+                    self.log.log_text(
+                        f"[TIMEOUT] trade_id={pos.trade_id} max_hold "
+                        f"({float(max_hold)/3600:.0f}h) elérve — kényszer-zárás"
+                    )
+                    try:
+                        loop0 = asyncio.get_event_loop()
+                        await loop0.run_in_executor(
+                            None, self.client.close_position, pos.deal_id
+                        )
+                    except Exception as e:
+                        logger.warning("TIMEOUT close hiba (%s): %s — következő ciklusban újra",
+                                       pos.deal_id, e)
+                        continue
+                    await self._close_position(pos, exit_reason="TIMEOUT")
+
+        if not self._open_positions:
+            return
         loop = asyncio.get_event_loop()
         live = await loop.run_in_executor(None, self.client.get_open_positions)
         live_deal_ids = set()

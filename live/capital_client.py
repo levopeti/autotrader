@@ -54,9 +54,22 @@ class CapitalClient:
 
     # ── REST ──
 
-    def _request(self, method: str, path: str, **kwargs):
+    def _request(self, method: str, path: str, _relogin_ok: bool = True, **kwargs):
         url = f"{self.api_base_url}{path}"
         r = self.session.request(method, url, timeout=30, **kwargs)
+        # Lejárt session (401) → egyszeri re-login + retry. A /session POST-ra
+        # magára nem retry-olunk (rekurzió-védelem).
+        if r.status_code == 401 and _relogin_ok and path != "/api/v1/session":
+            logger.warning("401 %s %s — session lejárt, re-login + retry", method, path)
+            self.cst = None
+            self.security_token = None
+            self.ensure_login()
+            if self.account_id:
+                try:
+                    self.ensure_account()
+                except Exception as e:
+                    logger.warning("re-login utáni account-switch hiba: %s", e)
+            r = self.session.request(method, url, timeout=30, **kwargs)
         r.raise_for_status()
         return r
 
