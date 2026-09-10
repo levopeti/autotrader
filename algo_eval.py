@@ -18,12 +18,14 @@ from pathlib import Path
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parent
-STRATEGIES = ["donchian_breakout", "london_breakout"]
+# (stratégia, epic) párok — a london_breakout két instrumentumon fut
+STRATEGY_RUNS = [("donchian_breakout", "GOLD"), ("london_breakout", "GOLD"),
+                 ("london_breakout", "USDJPY")]
 
 
-def load_all_trades(strategy: str) -> pd.DataFrame:
+def load_all_trades(strategy: str, epic: str = "GOLD") -> pd.DataFrame:
     dfs = []
-    for tp in glob.glob(str(ROOT / f"runs/*_live_{strategy}_GOLD_live/trades.csv")):
+    for tp in glob.glob(str(ROOT / f"runs/*_live_{strategy}_{epic}_live/trades.csv")):
         try:
             df = pd.read_csv(tp)
             if len(df):
@@ -70,8 +72,8 @@ def main():
     p.add_argument("--days", type=int, default=None)
     args = p.parse_args()
     total = 0.0
-    for s in STRATEGIES:
-        total += report(load_all_trades(s), s, args.days)
+    for s, epic in STRATEGY_RUNS:
+        total += report(load_all_trades(s, epic), f"{s} [{epic}]", args.days)
     print(f"\n{'='*70}\n  ALGO PORTFOLIO ÖSSZESEN: {total:+.2f}\n{'='*70}")
 
 
