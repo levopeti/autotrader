@@ -185,6 +185,11 @@ class LiveRunner:
             try:
                 bal = await loop.run_in_executor(None, self.client.get_balance, None)
                 if bal is not None and bal > 0:
+                    # Konverziós módban tick nélkül NEM frissítünk (különben a
+                    # quote-konverzió kimaradna és 150× alulméretezne)
+                    if self.live_cfg.equity_price_conversion and not self._last_mid:
+                        await asyncio.sleep(10)
+                        continue
                     eq = bal
                     if self.live_cfg.equity_price_conversion and self._last_mid:
                         eq = bal * self._last_mid
