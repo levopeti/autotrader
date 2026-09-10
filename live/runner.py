@@ -27,7 +27,7 @@ from backtest.engine.position_sizer import SizingConfig, compute_size
 from backtest.runlog.run_logger import RunLogger
 from backtest.strategies.base import Decision, Strategy, StrategyContext
 
-from .capital_client import TF_TO_RESOLUTION, CapitalClient
+from .broker import BrokerClient, Confirm, OpenPosition
 from .live_position import LivePosition, apply_trailing
 
 
@@ -113,7 +113,7 @@ class LiveRunner:
         strategy: Strategy,
         engine_cfg: EngineConfig,
         live_cfg: LiveConfig,
-        client: CapitalClient,
+        client: BrokerClient,
         logger_obj: RunLogger,
     ):
         self.strategy = strategy
@@ -223,29 +223,24 @@ class LiveRunner:
                 atr_now = None
 
         owned = self._owned_deal_ids()
-        for p in live:
-            pos_node = p.get("position", {})
-            market = p.get("market", {})
-            if market.get("epic") != self.epic:
+        for op in live:
+            if op.epic != self.epic:
                 continue
-            deal_id = str(pos_node.get("dealId"))
+            deal_id = op.deal_id
             if not deal_id or deal_id in self._open_positions:
                 continue
-            # Ownership-szűrő: ha van state file, csak a saját deal-jeinket
-            # adoptáljuk (másik stratégia pozícióját békén hagyjuk)
             if self.live_cfg.ownership_state_path is not None and deal_id not in owned:
                 self.log.log_text(
                     f"[ADOPT_SKIP] deal_id={deal_id} nem a miénk (ownership state) — kihagyva"
                 )
                 continue
-            direction = pos_node.get("direction")
-            entry_price = pos_node.get("level")
-            size = pos_node.get("size")
-            stop_level = pos_node.get("stopLevel")
-            created = pos_node.get("createdDateUTC") or pos_node.get("createdDate")
-            if direction not in ("BUY", "SELL") or entry_price is None or size is None:
+            direction = op.direction
+            entry_price = op.entry_price
+            size = op.size
+            stop_level = op.stop_level
+            created = op.created_utc
+            if direction not in ("BUY", "SELL") or not entry_price or not size:
                 continue
-            entry_price = float(entry_price)
             # SL fallback ha a brókernél nincs stopLevel
             if stop_level is not None:
                 sl_level = float(stop_level)
@@ -258,14 +253,14 @@ class LiveRunner:
             pos = LivePosition(
                 trade_id=self._trade_seq,
                 deal_id=deal_id,
-                deal_ref=str(pos_node.get("dealReference") or deal_id),
+                deal_ref=str(op.deal_reference or deal_id),
                 decision_event_id="adopted",
                 direction=direction,
                 entry_ts=_to_utc_naive(created) if created else _utcnow_naive(),
                 entry_price=entry_price,
                 size=float(size),
                 sl=sl_level,
-                tp=float(pos_node["profitLevel"]) if pos_node.get("profitLevel") is not None else None,
+                tp=float(op.profit_level) if op.profit_level is not None else None,
                 initial_sl=sl_level,
                 atr_at_open=atr_now,
                 verified_open=True,
@@ -347,8 +342,10 @@ class LiveRunner:
         loop = asyncio.get_event_loop()
         tfs = self.strategy.required_timeframes()
         new_mtf: Dict[str, pd.DataFrame] = {}
+        from .broker_factory import tf_resolution_map
+        tfmap = tf_resolution_map(self.client)
         for tf in tfs:
-            resolution = TF_TO_RESOLUTION.get(tf, "MINUTE")
+            resolution = tfmap.get(tf, "MINUTE")
             df = await loop.run_in_executor(
                 None, self.client.get_prices, self.epic, resolution, self.live_cfg.candle_max_points
             )
@@ -528,18 +525,10 @@ class LiveRunner:
                     # után a többi layer nyitása is felesleges (max_open már counter-elve).
                     return
 
-                deal_status = (confirm.get("dealStatus") or "").upper()
-                deal_id = _extract_position_deal_id(confirm) or deal_ref
-                level = confirm.get("level")
-                is_null_uuid = isinstance(deal_id, str) and deal_id.startswith("00000000-0000-0000")
-                is_rejected = (
-                    deal_status == "REJECTED"
-                    or is_null_uuid
-                    or level is None
-                    or level == 0
-                )
-                if is_rejected:
-                    reason = confirm.get("reason") or deal_status or "unknown"
+                deal_id = confirm.deal_id or deal_ref
+                level = confirm.level
+                if not confirm.accepted:
+                    reason = confirm.reason or confirm.status or "unknown"
                     self.log.log_text(
                         f"[REJECTED] {decision.direction} layer={layer_idx} reason={reason} "
                         f"deal_id={deal_id} deal_ref={deal_ref}"
@@ -556,7 +545,7 @@ class LiveRunner:
                         "size": layer_size,
                         "requested_sl_distance": sl_dist,
                         "requested_tp_distance": layer_tp_dist,
-                        "confirm": confirm,
+                        "confirm": (confirm.raw if confirm is not None else None),
                     })
                     continue
                 entry_actual = float(level)
@@ -614,7 +603,7 @@ class LiveRunner:
                 "dry_run": self.live_cfg.dry_run,
                 "score": decision.score,
                 "indicators": dict(ind),
-                "confirm": confirm,
+                "confirm": (confirm.raw if hasattr(confirm, "raw") else confirm),
             })
 
     # ── trailing: minden tick-en a nyitott pozíciókra ──
@@ -726,14 +715,10 @@ class LiveRunner:
         live = await loop.run_in_executor(None, self.client.get_open_positions)
         live_deal_ids = set()
         live_by_deal_ref: Dict[str, str] = {}    # dealReference → dealId (PENDING adopt-hoz)
-        for p in live:
-            pos_node = p.get("position", {})
-            d = pos_node.get("dealId")
-            if d:
-                live_deal_ids.add(str(d))
-            dref = pos_node.get("dealReference") or p.get("dealReference")
-            if dref and d:
-                live_by_deal_ref[str(dref)] = str(d)
+        for op in live:
+            live_deal_ids.add(op.deal_id)
+            if op.deal_reference:
+                live_by_deal_ref[op.deal_reference] = op.deal_id
 
         now = _utcnow_naive()
 
@@ -814,27 +799,12 @@ class LiveRunner:
             tx = await self._fetch_close_transaction(pos.deal_id)
         pnl_set_from_tx = False
         if tx:
-            try:
-                cl = tx.get("closeLevel")
-                if cl is not None:
-                    exit_price = float(cl)
-            except (TypeError, ValueError):
-                pass
-            currency = tx.get("currency")
-            # Capital `/history/transactions` válaszában a `size` mező a P&L értéke
-            # (legacy elnevezés, nem a lot). A `profitAndLoss` ritkán szerepel.
-            pnl_raw = tx.get("profitAndLoss")
-            if pnl_raw is None:
-                pnl_raw = tx.get("size")
-            if pnl_raw is not None:
-                try:
-                    s = str(pnl_raw).replace(",", "")
-                    digits = "".join(ch for ch in s if ch in "0123456789.-+")
-                    if digits:
-                        pos.pnl = float(digits)
-                        pnl_set_from_tx = True
-                except (TypeError, ValueError):
-                    pass
+            if tx.close_level is not None:
+                exit_price = tx.close_level
+            currency = tx.currency
+            if tx.pnl is not None:
+                pos.pnl = tx.pnl
+                pnl_set_from_tx = True
 
         if exit_price is None:
             exit_price = pos.entry_price  # fallback ha sehonnan nincs adat
@@ -882,7 +852,7 @@ class LiveRunner:
             "currency": currency,
             "exit_reason": exit_reason,
             "hold_seconds": (pos.exit_ts - pos.entry_ts).total_seconds(),
-            "transaction": tx,
+            "transaction": (tx.raw if tx is not None else None),
         })
         del self._open_positions[pos.deal_id]
         self._save_ownership()

@@ -36,7 +36,7 @@ from backtest.engine.runner import EngineConfig, apply_tp_layers_preset
 from backtest.runlog.run_logger import RunLogger, make_run_dir
 from backtest.strategies.registry import build_strategy
 
-from live.capital_client import CapitalClient
+from live.broker_factory import make_broker
 from live.runner import LiveConfig, LiveRunner
 
 
@@ -61,6 +61,8 @@ def parse_args():
                    help="JPY-quote instrumentum: equity_ref = balance × aktuális mid")
     p.add_argument("--size-increment", type=float, default=0.0,
                    help="Order-size kerekítés (pl. USDJPY: 100)")
+    p.add_argument("--broker", default="capital", choices=("capital", "etoro"),
+                   help="Melyik brókeren dolgozzon (default: capital)")
     return p.parse_args()
 
 
@@ -120,7 +122,7 @@ async def main_async() -> None:
     log.log_text(f"=== LIVE RUNNER START | strategy={strategy.name} | epic={epic} | "
                  f"mode={'LIVE' if args.live else 'DEMO'} | dry_run={args.dry_run} ===")
 
-    client = CapitalClient(demo=not args.live, account_id=args.account)
+    client = make_broker(args.broker, demo=not args.live, account_id=args.account)
     live_cfg = LiveConfig(
         epic=epic,
         candle_max_points=args.candle_max_points,

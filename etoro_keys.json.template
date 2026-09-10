@@ -1,0 +1,6 @@
+{
+  "_comment": "eToro API kulcsok template — másold át etoro_keys.json-ra a valós értékekkel. A .gitignore ne engedje bekerülni a repo-ba!",
+  "etoro_api_key": "PLACEHOLDER_API_KEY",
+  "etoro_api_secret": "PLACEHOLDER_SECRET_IF_NEEDED",
+  "etoro_account_id": "PLACEHOLDER_ACCOUNT_ID_or_null_for_default"
+}
