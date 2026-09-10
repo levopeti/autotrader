@@ -88,6 +88,17 @@ class LiveConfig:
     # trendben minden tick új SL-t PUT-olna (Capital 429 kockázat).
     trail_min_step_atr_frac: float = 0.10
 
+    # Dinamikus equity (compound sizing): ha True, a runner periodikusan
+    # lekéri a fiók balance-át és a fixed_risk sizing equity-referenciáját
+    # erre állítja → a per-trade kockázat a tőkével arányosan nő/csökken.
+    dynamic_equity: bool = False
+    equity_refresh_seconds: float = 300.0
+    # JPY-quote instrumentumokhoz (pl. USDJPY): equity_ref = balance × last_mid,
+    # mert a fixed_risk formula a QUOTE devizában számol kockázatot.
+    equity_price_conversion: bool = False
+    # Order-size kerekítés (Capital minSizeIncrement, pl. USDJPY=100). 0 = nincs.
+    order_size_increment: float = 0.0
+
     # Ownership state-file: a runner ide perzisztálja a SAJÁT nyitott
     # deal_id-jait. Restart-adopt CSAK az itt szereplő deal-eket veszi fel —
     # így két stratégia (pl. donchian + london_breakout) futhat ugyanazon a
@@ -128,6 +139,7 @@ class LiveRunner:
         self._last_candle_refresh = 0.0
         self._candles_mtf: Dict[str, pd.DataFrame] = {}
         self._recent_open_attempts: List[float] = []          # monotonic ts-ek — rate limit
+        self._last_mid: Optional[float] = None
 
     # ── főloop ──
 
@@ -157,11 +169,36 @@ class LiveRunner:
         if not self.live_cfg.dry_run:
             await self._adopt_existing_positions()
 
-        await asyncio.gather(
+        tasks = [
             self._tick_loop(),
             self._candle_refresh_loop(),
             self._position_poll_loop(),
-        )
+        ]
+        if self.live_cfg.dynamic_equity:
+            tasks.append(self._equity_refresh_loop())
+        await asyncio.gather(*tasks)
+
+    async def _equity_refresh_loop(self) -> None:
+        """Compound sizing: a fixed_risk equity-referencia követi a fiók balance-át."""
+        loop = asyncio.get_event_loop()
+        while True:
+            try:
+                bal = await loop.run_in_executor(None, self.client.get_balance, None)
+                if bal is not None and bal > 0:
+                    eq = bal
+                    if self.live_cfg.equity_price_conversion and self._last_mid:
+                        eq = bal * self._last_mid
+                    old_eq = self._sizing.equity
+                    if abs(eq - old_eq) / max(old_eq, 1e-9) > 0.01:
+                        self._sizing.equity = eq
+                        self.log.log_text(
+                            f"[EQUITY] sizing-referencia frissítve: {old_eq:.2f} → {eq:.2f} "
+                            f"(balance={bal:.2f}"
+                            f"{', ×mid=' + format(self._last_mid, '.2f') if self.live_cfg.equity_price_conversion and self._last_mid else ''})"
+                        )
+            except Exception as e:
+                logger.warning("equity refresh hiba: %s", e)
+            await asyncio.sleep(self.live_cfg.equity_refresh_seconds)
 
     async def _adopt_existing_positions(self) -> None:
         loop = asyncio.get_event_loop()
@@ -277,6 +314,7 @@ class LiveRunner:
         async for tick in self.client.stream_ticks(self.epic):
             ts = _to_utc_naive(tick["ts"])
             bid, ask = tick["bid"], tick["ask"]
+            self._last_mid = (bid + ask) / 2.0
             # 1) Trailing-update minden nyitott pozícióra
             for pos in list(self._open_positions.values()):
                 self._maybe_update_trailing(pos, bid, ask, ts)
@@ -369,6 +407,9 @@ class LiveRunner:
             score=decision.score,
             sl_distance=decision.sl_distance,
         )
+        inc = self.live_cfg.order_size_increment
+        if inc and inc > 0:
+            total_size = int(total_size / inc) * inc    # lefelé kerekítés incrementre
         if total_size <= 0:
             return
 

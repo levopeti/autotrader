@@ -1,0 +1,42 @@
+strategy: london_breakout
+
+# ============================================================================
+# USDJPY TOKYO-LOB LIVE (2026-09-10, teljes battérián validált)
+# ============================================================================
+# 3y Dukascopy (Capital-spread beégetve, slip-stressz): PF 1.58, DD -353
+# Plató: 26/26 center-körüli variáns pozitív (minden dimenzió sweep-elve)
+# WF (14 ablak): FIX config +1,110, 12/14 pozitív — a legjobb WF-konzisztencia
+# Tokyo-range 00-07 UTC → kitörés 07-13 UTC, TIME_EXIT 20:00 UTC, 1 trade/nap
+# Sizing: fixed_risk 2% (dynamic equity + JPY-konverzió a CLI-flagekkel!)
+# ============================================================================
+
+data:
+  tick_parquet: ./data/tick_pseudo_USDJPY_3y.parquet   # live-ban nem használt
+  epic: USDJPY
+
+engine:
+  candle_tf: 1h
+  max_gap_factor: 3.0
+  min_segment_duration: 1h
+  max_open_positions: 1
+  allow_multiple_directions: false
+  max_hold_seconds: 57600           # 16h backstop (TIME_EXIT az elsődleges)
+  slippage: 0.015
+  commission_per_trade: 0.0
+  trailing_mode: none
+  sizing_mode: fixed_risk
+  risk_pct: 0.02
+  equity: 150000.0                  # fallback JPY-ban (~$1000×150) az első fetch-ig
+  min_order_size: 100.0
+  max_order_size: 50000.0
+
+strategy_params:
+  asia_end_hour: 7
+  entry_end_hour: 13
+  session_close_hour: 20
+  buffer_datr_frac: 0.20
+  max_range_datr_mult: 1.2
+  datr_period: 14
+  trend_ema: 20
+  trend_filter_enabled: true
+  min_asia_bars: 6

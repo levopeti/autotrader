@@ -140,6 +140,17 @@ class CapitalClient:
         df["timestamp"] = df["timestamp"].dt.tz_convert("UTC").dt.tz_localize(None)
         return df
 
+    def get_balance(self, account_id: Optional[str] = None) -> Optional[float]:
+        """Az adott (vagy a kliens) account aktuális balance-a."""
+        aid = str(account_id or self.account_id or "")
+        data = self._request("GET", "/api/v1/accounts").json()
+        for a in data.get("accounts", []):
+            if not aid or str(a.get("accountId")) == aid:
+                b = a.get("balance", {})
+                v = b.get("balance")
+                return float(v) if v is not None else None
+        return None
+
     def get_open_positions(self) -> List[Dict]:
         return self._request("GET", "/api/v1/positions").json().get("positions", [])
 

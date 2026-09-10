@@ -55,6 +55,12 @@ def parse_args():
     p.add_argument("--suffix", default=None)
     p.add_argument("--state", default=None,
                    help="Ownership state-file (több stratégia egy fiókon; pl. state_live_donch.json)")
+    p.add_argument("--dynamic-equity", action="store_true",
+                   help="Compound sizing: fixed_risk equity = élő fiók-balance (5 percenként frissítve)")
+    p.add_argument("--equity-conv-price", action="store_true",
+                   help="JPY-quote instrumentum: equity_ref = balance × aktuális mid")
+    p.add_argument("--size-increment", type=float, default=0.0,
+                   help="Order-size kerekítés (pl. USDJPY: 100)")
     return p.parse_args()
 
 
@@ -122,6 +128,9 @@ async def main_async() -> None:
         position_poll_seconds=args.position_poll_sec,
         dry_run=args.dry_run,
         ownership_state_path=args.state,
+        dynamic_equity=args.dynamic_equity,
+        equity_price_conversion=args.equity_conv_price,
+        order_size_increment=args.size_increment,
     )
     runner = LiveRunner(strategy, engine_cfg, live_cfg, client, log)
     print(f"Run-mappa: {run_dir}")

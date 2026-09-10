@@ -1,6 +1,6 @@
 data:
   epic: GOLD
-  tick_parquet: ./data/tick_data_GOLD.parquet
+  tick_parquet: ./data/tick_pseudo_XAU_2y.parquet
 engine:
   allow_multiple_directions: false
   candle_tf: 1h
@@ -15,7 +15,7 @@ engine:
   min_segment_duration: 1h
   risk_pct: 0.02
   sizing_mode: fixed_risk
-  slippage: 0.1
+  slippage: 0.3
   trailing_mode: none
 strategy: london_breakout
 strategy_params:
