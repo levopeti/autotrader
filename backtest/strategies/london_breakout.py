@@ -136,7 +136,11 @@ class LondonBreakout(Strategy):
             exit_at_ts=exit_at,
             indicators={
                 "asia_hi": hi, "asia_lo": lo, "asia_range": rng,
-                "datr": datr, "buffer": buf,
+                # `atr` mező a trailing-motorhoz (napi range-proxy — órás holdokhoz
+                # ez a helyes vol-referencia, nem az órás ATR). `datr` marad
+                # is diagnosztikai célra.
+                "atr": datr, "datr": datr,
+                "buffer": buf,
                 "trend": trend if trend is not None else 0.0,
             },
         )
