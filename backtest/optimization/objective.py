@@ -6,7 +6,7 @@ from typing import Callable, Dict, Optional
 import numpy as np
 import pandas as pd
 
-from ..engine.runner import BacktestRunner, EngineConfig
+from ..engine.runner import BacktestRunner, EngineConfig, apply_tp_layers_preset
 from ..runlog.noop_logger import NoopLogger
 from ..strategies.registry import build_strategy
 from .param_space import SearchSpace, apply_suggestion
@@ -90,7 +90,8 @@ def _score_from_metrics(metrics: Dict, cfg: ObjectiveConfig) -> float:
 
 
 def _build_engine_cfg(cfg: dict, epic: str) -> EngineConfig:
-    e = cfg["engine"]
+    e = dict(cfg["engine"])    # másol, mert apply_tp_layers_preset mutál
+    apply_tp_layers_preset(e)
     return EngineConfig(
         epic=epic,
         candle_tf=e["candle_tf"],
@@ -110,4 +111,6 @@ def _build_engine_cfg(cfg: dict, epic: str) -> EngineConfig:
         max_order_size=e.get("max_order_size", 10.0),
         risk_pct=e.get("risk_pct", 0.01),
         equity=e.get("equity", 10000.0),
+        tp_layers=e.get("tp_layers"),
+        tp_layer_size_pcts=e.get("tp_layer_size_pcts"),
     )

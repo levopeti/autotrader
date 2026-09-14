@@ -59,3 +59,5 @@ engine:
   break_even_trigger_atr_mult:     {type: float, low: 0.3,  high: 2.5}
   sizing_mode:                     {type: categorical, choices: [fixed_lot, score_scaled, fixed_risk]}
   risk_pct:                        {type: float, low: 0.002, high: 0.03}
+  # Layered TP: az Optuna preset-stringből választ, a runner mappeli tp_layers/sizes-okra.
+  tp_layers_preset:                {type: categorical, choices: [single, two_equal, three_equal, three_weighted, four_layer]}

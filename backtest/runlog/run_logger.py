@@ -42,10 +42,12 @@ class RunLogger:
       - run.log           : human-readable szöveges log
     """
 
-    def __init__(self, run_dir: Path, config: dict, mode: str = "backtest"):
+    def __init__(self, run_dir: Path, config: dict, mode: str = "backtest",
+                 echo_console: bool = False):
         self.run_dir = Path(run_dir)
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.mode = mode
+        self.echo_console = echo_console
 
         with open(self.run_dir / "config.yaml", "w", encoding="utf-8") as f:
             yaml.safe_dump(config, f, sort_keys=False, allow_unicode=True)
@@ -62,7 +64,11 @@ class RunLogger:
 
     def log_text(self, msg: str) -> None:
         ts = datetime.now(timezone.utc).isoformat()
-        self._log_f.write(f"{ts} | {msg}\n")
+        line = f"{ts} | {msg}"
+        self._log_f.write(line + "\n")
+        if self.echo_console:
+            import sys as _sys
+            print(line, file=_sys.stderr, flush=True)
 
     def log_event(self, event_type: str, payload: Dict[str, Any]) -> str:
         event_id = uuid.uuid4().hex[:12]

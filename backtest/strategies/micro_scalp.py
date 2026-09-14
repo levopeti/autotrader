@@ -29,6 +29,10 @@ VALID_TREND_MODES = ("off", "block", "trend_only")
 VALID_SL_TP_MODES = ("fixed_dollars", "atr_mult")
 
 
+def _tf_td64(tf: str) -> np.timedelta64:
+    return np.timedelta64(int(pd.Timedelta(tf).value), "ns")
+
+
 class MicroScalp(Strategy):
     name = "micro_scalp"
 
@@ -86,7 +90,7 @@ class MicroScalp(Strategy):
         self._htf_ema: Optional[np.ndarray] = None
         self._htf_atr: Optional[np.ndarray] = None
         self._htf_slope_per_atr: Optional[np.ndarray] = None
-        self._tick_i: int = 0
+        self._segment_tick_ts: Optional[np.ndarray] = None
         self._warmup: int = 0
 
         self._last_sl_ts_buy: Optional[pd.Timestamp] = None
@@ -123,18 +127,21 @@ class MicroScalp(Strategy):
         self._htf_ema = ema_v.to_numpy(dtype=float)
         self._htf_atr = atr_v.to_numpy(dtype=float)
         self._htf_slope_per_atr = slope_per_atr.to_numpy(dtype=float)
-        htf_ts = htf["timestamp"].values
-        self._htf_idx_per_tick = (np.searchsorted(htf_ts, ts_arr, side="right") - 1).astype(np.int64)
+        # Csak lezárt HTF gyertyára indexelünk: a candle nyitóideje + tf a
+        # zárás időpontja, így nincs look-ahead.
+        htf_ts_close = htf["timestamp"].values + _tf_td64(self.candle_tf)
+        self._htf_idx_per_tick = (np.searchsorted(htf_ts_close, ts_arr, side="right") - 1).astype(np.int64)
 
-        self._tick_i = 0
+        self._segment_tick_ts = ts_arr
         self._warmup = max(self.micro_window_ticks, self.zscore_window_ticks)
         self._last_sl_ts_buy = None
         self._last_sl_ts_sell = None
 
     # ─────────────────────────────────────────────────────────────────────────
     def on_tick(self, ts: pd.Timestamp, bid: float, ask: float) -> Optional[Decision]:
-        i = self._tick_i
-        self._tick_i += 1
+        # A runner kihagyhatja az on_tick-et (max_open_positions limit), ezért
+        # `ts`-ből keressük a tick-indexet — nem belső számlálóval.
+        i = int(np.searchsorted(self._segment_tick_ts, ts.to_datetime64(), side="right") - 1)
         if i < self._warmup:
             return None
 

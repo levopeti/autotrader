@@ -23,7 +23,7 @@ if str(ROOT) not in sys.path:
 
 from backtest.data.data_summary import compute_data_summary, print_data_summary, save_data_summary
 from backtest.data.tick_store import load_ticks, time_range
-from backtest.engine.runner import BacktestRunner, EngineConfig
+from backtest.engine.runner import BacktestRunner, EngineConfig, apply_tp_layers_preset
 from backtest.runlog.run_logger import RunLogger, make_run_dir
 from backtest.strategies.registry import build_strategy
 
@@ -35,6 +35,7 @@ def load_config(path: Path) -> dict:
 
 def build_engine_cfg(cfg: dict, epic_override: str | None) -> EngineConfig:
     e = cfg["engine"]
+    apply_tp_layers_preset(e)
     epic = epic_override or cfg["data"]["epic"]
     return EngineConfig(
         epic=epic,
@@ -55,6 +56,8 @@ def build_engine_cfg(cfg: dict, epic_override: str | None) -> EngineConfig:
         max_order_size=e.get("max_order_size", 10.0),
         risk_pct=e.get("risk_pct", 0.01),
         equity=e.get("equity", 10000.0),
+        tp_layers=e.get("tp_layers"),
+        tp_layer_size_pcts=e.get("tp_layer_size_pcts"),
     )
 
 
@@ -65,6 +68,10 @@ def parse_args():
     p.add_argument("--epic", default=None, help="Epic override (különben a config-ból)")
     p.add_argument("--runs_dir", default="runs", help="Run-mappák gyökere")
     p.add_argument("--suffix", default=None, help="Run-mappa név végéhez fűzött tag")
+    p.add_argument("--from", dest="ts_from", default=None,
+                   help="Tick szűrő kezdet (ISO), pl. 2026-06-01 vagy 2026-06-01T00:00:00")
+    p.add_argument("--to", dest="ts_to", default=None,
+                   help="Tick szűrő vég (exclusive), pl. 2026-07-01")
     return p.parse_args()
 
 
@@ -94,6 +101,23 @@ def main():
     try:
         logger.log_text(f"Tick parquet betöltése: {tick_path}")
         ticks = load_ticks(tick_path)
+
+        # Opcionális time-slice (walk-forward validációhoz)
+        if args.ts_from or args.ts_to:
+            import pandas as pd
+            n_before = len(ticks)
+            if args.ts_from:
+                ts_from = pd.Timestamp(args.ts_from, tz="UTC")
+                ticks = ticks[ticks["timestamp_utc"] >= ts_from]
+            if args.ts_to:
+                ts_to = pd.Timestamp(args.ts_to, tz="UTC")
+                ticks = ticks[ticks["timestamp_utc"] < ts_to]
+            ticks = ticks.reset_index(drop=True)
+            logger.log_text(
+                f"Time-slice szűrő: {args.ts_from or '-inf'} → {args.ts_to or '+inf'} | "
+                f"ticks: {n_before:,} → {len(ticks):,}"
+            )
+
         t_min, t_max = time_range(ticks)
         logger.log_text(f"Ticks: {len(ticks):,} | {t_min.isoformat()} → {t_max.isoformat()}")
 

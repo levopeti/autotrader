@@ -14,6 +14,11 @@ VALID_SL_TP_MODES = ("fixed_dollars", "atr_mult")
 VALID_ENTRY_MODES = ("immediate", "pullback")
 
 
+def _tf_td64(tf: str) -> np.timedelta64:
+    """Stringből (pl. '5min', '1h') numpy timedelta64[ns]."""
+    return np.timedelta64(int(pd.Timedelta(tf).value), "ns")
+
+
 class TrendReversal(Strategy):
     """
     EMA + RSI alapú trend stratégia tick imbalance confirmation-nel.
@@ -117,7 +122,19 @@ class TrendReversal(Strategy):
 
     # ─────────────────────────────────────────────────────────────────────────
     def on_segment_start(self, ctx: StrategyContext) -> None:
-        ltf = ctx.candles_mtf[self.candle_tf].copy()
+        self.refresh_candles(ctx.candles_mtf)
+
+        # Tick state reset — csak új szegmensnél / live indulásnál
+        self._tick_signs.clear()
+        self._spread_window.clear()
+        self._last_mid = None
+        self._last_decision_ts = None
+        self._last_sl_ts_buy = None
+        self._last_sl_ts_sell = None
+
+    def refresh_candles(self, candles_mtf) -> None:
+        """Csak az indikátor-arrays-t frissíti. Live módban periodikusan hívja a runner."""
+        ltf = candles_mtf[self.candle_tf].copy()
         ltf["ema_fast"] = ema(ltf["close"], self.ema_fast)
         ltf["ema_slow"] = ema(ltf["close"], self.ema_slow)
         ltf["rsi"] = rsi(ltf["close"], self.rsi_period)
@@ -133,10 +150,15 @@ class TrendReversal(Strategy):
             "atr": ltf["atr"].to_numpy(dtype=float),
             "adx": ltf["adx"].to_numpy(dtype=float),
         }
+        # A timestamp a gyertya nyitóideje (label='left'); a gyertya csak `tf`
+        # múlva zárul. A keresésnél ezt a zárást használjuk, hogy a tick-szintű
+        # döntés CSAK lezárt gyertyák adatát lássa (no look-ahead).
+        ltf_tf = _tf_td64(self.candle_tf)
+        self._ltf_close_ts = ltf["timestamp"].values + ltf_tf
         self._ltf_ts = ltf["timestamp"].values
         self._atr_extreme_thr = float(np.nanquantile(self._ltf_arr["atr"], self.atr_extreme_pct))
 
-        htf = ctx.candles_mtf[self.htf_candle_tf].copy()
+        htf = candles_mtf[self.htf_candle_tf].copy()
         htf_ema_f = ema(htf["close"], self.htf_ema_fast).to_numpy(dtype=float)
         htf_ema_s = ema(htf["close"], self.htf_ema_slow).to_numpy(dtype=float)
         htf_close = htf["close"].to_numpy(dtype=float)
@@ -144,14 +166,9 @@ class TrendReversal(Strategy):
         htf_align[(htf_close > htf_ema_s) & (htf_ema_f > htf_ema_s)] = 1
         htf_align[(htf_close < htf_ema_s) & (htf_ema_f < htf_ema_s)] = -1
         self._htf_align_arr = htf_align
+        htf_tf = _tf_td64(self.htf_candle_tf)
+        self._htf_close_ts = htf["timestamp"].values + htf_tf
         self._htf_ts = htf["timestamp"].values
-
-        self._tick_signs.clear()
-        self._spread_window.clear()
-        self._last_mid = None
-        self._last_decision_ts = None
-        self._last_sl_ts_buy = None
-        self._last_sl_ts_sell = None
 
     # ─────────────────────────────────────────────────────────────────────────
     def on_tick(self, ts: pd.Timestamp, bid: float, ask: float) -> Optional[Decision]:
@@ -169,7 +186,10 @@ class TrendReversal(Strategy):
                 return None
         self._last_decision_ts = ts
 
-        candle_idx = int(np.searchsorted(self._ltf_ts, ts.to_datetime64(), side="right") - 1)
+        # Csak a már lezárt gyertyát olvassuk (a `_ltf_close_ts` a gyertya
+        # zárási ideje): searchsorted-tel a legutolsó olyan gyertyát kapjuk,
+        # amelynek a zárása <= ts.
+        candle_idx = int(np.searchsorted(self._ltf_close_ts, ts.to_datetime64(), side="right") - 1)
         warmup = max(self.ema_slow, self.atr_period, self.adx_period) + 2
         if candle_idx < warmup:
             return None
@@ -185,7 +205,7 @@ class TrendReversal(Strategy):
                 and np.isfinite(atr_v) and np.isfinite(adx_v)):
             return None
 
-        htf_idx = int(np.searchsorted(self._htf_ts, ts.to_datetime64(), side="right") - 1)
+        htf_idx = int(np.searchsorted(self._htf_close_ts, ts.to_datetime64(), side="right") - 1)
         htf_align = int(self._htf_align_arr[htf_idx]) if htf_idx >= 0 else 0
 
         action, direction = self._classify_signal(close, ef, es, rv, rv_prev)

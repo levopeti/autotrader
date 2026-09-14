@@ -27,6 +27,12 @@ engine:
   risk_pct: 0.01                   # fixed_risk módban: equity ennyi %-át kockáztatjuk / trade
   equity: 10000.0                  # fixed_risk módban a (notionalis) tőke
 
+  # Layered TP — scaled exit. Null/üres → 1 réteg (régi viselkedés).
+  # Példa: [0.5, 0.75, 1.0] → 3 pozíció rétegezett TP-vel, közös SL-lel
+  # A tp_layer_size_pcts opcionális (default: uniform). Össz=1.0-ra normalizálva.
+  tp_layers: null
+  tp_layer_size_pcts: null
+
 strategy_params:
   # ── Timeframe ──
   candle_tf: 5min
