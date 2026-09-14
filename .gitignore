@@ -1,2 +1,106 @@
+# Titkok
 etoro_keys.json
 keys_urls.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.idea/
+.vscode/
+
+# Backtest / live output (nagy, nem verzionálandó)
+runs/
+data/
+logs_live/
+logs_bulk/
+capital/logs/
+capital/output/
+range_scalping/output/
+
+# Log fájlok
+*.log
+
+# Élő állapot / futásidejű artifactok
+state_*.json
+positions.csv
+positions.csv.bak
+*.session
+
+# Sweep / kísérleti config csoportok (memóriában rögzített eredményű one-shotok)
+configs_*/
+backtest/configs/_*
+backtest/configs/_tmp_*
+backtest/configs/_rs_winner.yaml
+
+# Data / eredmény CSV-k (a broker + runlog az igazság-forrás)
+algo_all_summary.csv
+algo_all_trades.csv
+algo_batch3_summary.csv
+attributed_trades_30d.csv
+capital_activity_30d.csv
+capital_tx_30d.csv
+capital_tx_30d_attributed.csv
+channel_pnl_30d.csv
+channel_pnl_attributed.csv
+kalman_ewma_sweep.csv
+regime_daily.csv
+rs_all_trades.csv
+signal_sweep_summary.csv
+signal_sweep_trades.csv
+stable_wf.csv
+wf_summary.csv
+range_scalping/wf_report_wf_summary.csv
+
+# Sweep helper scriptek (kísérletiek — memória őrzi az eredményt)
+algo_batch3.py
+algo_eval.py
+algo_sweep.py
+algo_sweep2.py
+btc_new_strats_sweep.py
+btc_swing_sweep.py
+btc_trend_sweep.py
+consensus_analyze.py
+consensus_no_vip_sweep.py
+consensus_sweep.py
+download_dukascopy.py
+eurjpy_master_sweep.py
+gold_master_sweep.py
+gold_nf_walk_forward.py
+gold_rs_2d_sweep.py
+gold_rs_finegrain_sweep.py
+gold_rs_regime_sweep.py
+gold_rs_stage3_sweep.py
+gold_rs_stage4_combo.py
+gold_silver_1min_confirm.py
+gold_silver_1min_wf.py
+gold_silver_eth_kalman.py
+gold_silver_exits_sweep.py
+gold_silver_kalman_wf.py
+gold_silver_qr_sweep.py
+gold_silver_tf_sweep.py
+gold_walk_forward.py
+range_scalp_btc_sweep.py
+range_scalp_deep_sweep.py
+range_scalp_sweep.py
+range_scalp_trend_sweep.py
+rs_confirmation_sweep.py
+rs_multi_instrument.py
+signal_combo.py
+signal_per_channel_sweep.py
+tp_combo_sweep.py
+traderz_ladder_backtest.py
+traderz_ladder_v2.py
+trailing_sweep.py
+trend_filter_sweep.py
+vip_deep_sweep.py
+today_should_have_earned.py
+
+# Bash sweep launcherek
+run_all_backtests.sh
+run_remaining_backtests.sh
+
+# Scratch / más projektek
+test.py
