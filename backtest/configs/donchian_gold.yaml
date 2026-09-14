@@ -1,0 +1,36 @@
+strategy: donchian_breakout
+
+data:
+  tick_parquet: ./data/tick_data_GOLD.parquet
+  epic: GOLD
+
+engine:
+  candle_tf: 5min
+  max_gap_factor: 2.0
+  min_segment_duration: 1h
+  max_open_positions: 1
+  allow_multiple_directions: false
+  max_hold_seconds: 14400
+  slippage: 0.10
+  commission_per_trade: 0.0
+  trailing_mode: atr_trail
+  trail_atr_mult: 2.0
+  break_even_trigger_atr_mult: 1.0
+  sizing_mode: fixed_lot
+  fixed_lot_size: 1.0
+  min_order_size: 0.5
+  max_order_size: 3.0
+  equity: 10000.0
+
+strategy_params:
+  candle_tf: 5min
+  donchian_period: 20
+  atr_period: 14
+  sl_atr_mult: 2.0
+  tp_atr_mult: 5.0
+  breakout_buffer: 0.0
+  trend_filter_enabled: true
+  trend_filter_tf: 4h
+  trend_ema_fast: 9
+  trend_ema_slow: 21
+  cooldown_bars: 5

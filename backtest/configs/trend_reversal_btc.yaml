@@ -1,0 +1,80 @@
+strategy: trend_reversal
+
+data:
+  tick_parquet: ./data/tick_data_BTCUSD.parquet
+  epic: BTCUSD
+
+engine:
+  candle_tf: 5min
+  max_gap_factor: 2.0
+  min_segment_duration: 1h
+  max_open_positions: 1
+  allow_multiple_directions: false
+  max_hold_seconds: 14400          # 4 óra (BTC trend hullámok hosszabbak)
+  slippage: 15.0                   # BTC skála
+  commission_per_trade: 0.0
+
+  trailing_mode: atr_trail         # BTC trending → trailing hasznos
+  trail_atr_mult: 2.0
+  break_even_trigger_atr_mult: 1.0
+
+  sizing_mode: fixed_lot
+  fixed_lot_size: 0.01
+  min_order_size: 0.001
+  max_order_size: 0.1
+  risk_pct: 0.01
+  equity: 10000.0
+
+  tp_layers: null
+  tp_layer_size_pcts: null
+
+strategy_params:
+  candle_tf: 5min
+  htf_candle_tf: 1h
+  require_htf_align: true
+  htf_ema_fast: 9
+  htf_ema_slow: 21
+
+  ema_fast: 9
+  ema_slow: 21
+  rsi_period: 7
+  atr_period: 14
+  adx_period: 14
+  min_adx: 25.0                    # BTC trendes → magasabb küszöb OK
+
+  enable_trend_mode: true
+  enable_reversal_mode: false
+  rsi_long_level: 55
+  rsi_short_level: 45
+  rsi_oversold: 30.0
+  rsi_overbought: 70.0
+  rsi_recovery_min_delta: 1.0
+
+  entry_mode: immediate
+  pullback_max_dist_ema_atr: 0.5
+
+  tick_buffer_size: 20
+  tick_confirm_window: 4
+  tick_min_imbalance: 0.40
+  max_spread_atr: 0.30             # BTC-en tágabb spread
+  spread_z_window: 200
+  spread_z_max: 2.5
+
+  score_threshold: 0.35
+  adx_strong_threshold: 40.0
+  htf_align_score_bonus: 0.15
+  atr_extreme_pct: 0.95
+  atr_extreme_penalty: 0.10
+
+  sl_mode: atr_mult
+  tp_mode: atr_mult
+  sl_dollars: 500.0
+  tp_dollars: 1000.0
+  sl_atr_mult: 2.0                 # BTC-en tágabb SL
+  tp_atr_mult: 4.0                 # 1:2 R/R
+  min_sl_distance: 10.0
+
+  cooldown_minutes: 30.0
+  enable_session_filter: false     # BTC 24/7
+
+  decision_interval_sec: 30.0      # BTC-en ritkább döntéseket kell

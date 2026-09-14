@@ -1,0 +1,70 @@
+strategy: micro_scalp
+
+data:
+  tick_parquet: ./data/tick_data_GOLD.parquet
+  epic: GOLD
+
+engine:
+  candle_tf: 1min                    # gap detektorhoz
+  max_gap_factor: 5.0
+  min_segment_duration: 30min
+  max_open_positions: 1              # live-ban max 1 pozíció
+  allow_multiple_directions: false
+  max_hold_seconds: 600              # 10 perc max — scalp
+  slippage: 0.05
+  commission_per_trade: 0.0
+
+  # Trailing — scalp-nél felesleges, gyorsan exit
+  trailing_mode: none
+  trail_atr_mult: 1.0
+  break_even_trigger_atr_mult: 0.5
+
+  # Sizing: fixed_risk — kicsi SL automatikusan nagy lot-tot ad
+  sizing_mode: fixed_risk
+  fixed_lot_size: 1.0
+  min_order_size: 0.5
+  max_order_size: 100.0              # feleressze, hogy a kis SL-eknél tudjon nagyot venni
+  risk_pct: 0.005                    # 0.5% / trade
+  equity: 10000.0
+
+strategy_params:
+  # ── HTF trend-context ──
+  candle_tf: 5min                    # 5min EMA + ATR a trend-szlóphoz
+  ema_period: 20
+  atr_period: 14
+  ema_slope_lookback: 3              # ennyi candle hátranéz az EMA-slope számolásához
+
+  # ── Trend protection ──
+  # off:        nincs trend filter
+  # block:      ha trend erős, NEM lép be
+  # trend_only: ha trend erős, csak trend-irányú mean-reversion (pl. uptrend-ben csak BUY-dip)
+  trend_mode: trend_only             # erős trendben csak trend-irányú mean-reversion (don't fight the trend)
+  trend_strong_atr_mult: 0.2         # |EMA_slope_per_bar / ATR| ≥ ennyi → trend erős (érzékeny)
+
+  # ── Tick-szintű mikro-range ──
+  micro_window_ticks: 600            # ~60 sec @ 100ms/tick
+  max_micro_range: 6.0               # $ — engedjük a volatilisebb állapotot is
+
+  # ── Z-score belépés ──
+  zscore_window_ticks: 200           # ~20 sec
+  zscore_entry: 2.5                  # |z| ≥ 2.5 → szigorúbb mean-reversion belépés
+  min_std: 0.05                      # ennél kisebb szórásnál nem lép (zaj)
+
+  # ── TP/SL ──
+  # fixed_dollars: a *_dollars értéket használja
+  # atr_mult:      sl/tp = HTF ATR × *_atr_mult (volatility-aware)
+  sl_mode: atr_mult
+  tp_mode: atr_mult
+  tp_dollars: 0.5
+  sl_dollars: 0.8
+  tp_atr_mult: 0.4                   # ~40% HTF ATR — kicsi TP
+  sl_atr_mult: 0.6                   # ~60% HTF ATR — szoros SL
+  min_sl_distance: 0.1
+
+  # ── Cooldown ──
+  cooldown_seconds: 60
+
+  # ── Session ──
+  enable_session_filter: false
+  session_start: 7
+  session_end: 21

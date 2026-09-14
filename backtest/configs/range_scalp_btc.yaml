@@ -1,0 +1,76 @@
+strategy: range_scalp
+
+# BTC-skálázott range_scalp config:
+# - BTC ár ~$58-78k, median spread $50 (vs GOLD ~$0.5)
+# - 5min range medián $88, p90 $218
+# - Az abszolút paraméterek ~100x faktorral skálázva
+# - A ratio-paraméterek (adx, bb_squeeze, range_pct) ugyanazok mint GOLD-on
+
+data:
+  tick_parquet: ./data/tick_data_BTCUSD.parquet
+  epic: BTCUSD
+
+engine:
+  candle_tf: 5min
+  max_gap_factor: 2.0
+  min_segment_duration: 2h
+  max_open_positions: 1
+  allow_multiple_directions: false
+  max_hold_seconds: 7200
+  slippage: 10.0                   # ← skálázott: 0.10 → 10.0
+  commission_per_trade: 0.0
+
+  sizing_mode: fixed_lot
+  fixed_lot_size: 0.01             # ← BTC-re kicsi méret (0.01 BTC ~$700)
+  min_order_size: 0.001
+  max_order_size: 0.1
+  equity: 10000.0
+
+strategy_params:
+  ltf_candle_tf: 5min
+  htf_candle_tf: 1h
+
+  # Ranging definíció — ratio-paraméterek, BTC-en is működnek
+  adx_period: 14
+  adx_threshold: 40.0
+  bb_period: 20
+  bb_std: 2.0
+  bb_squeeze_pct: 0.35
+  range_lookback: 50
+  entry_buffer: 30.0               # ← skálázott: 0.30 → 30.0
+  entry_zone_pct: 0.30
+  min_range_atr_mult: 1.5
+  max_range_atr_mult: 30.0
+
+  # Tick szűrők — adaptiv küszöbök (z-score, imbalance)
+  tick_vel_window: 20
+  tick_vel_max: 300.0              # ← skálázott: 3.0 → 300.0
+  spread_z_window: 200
+  spread_z_max: 2.5
+  tick_imbalance_window: 10
+  tick_imbalance_max_opposite: 0.5
+
+  cooldown_minutes: 30
+  tp_max_range_pct: 1.0
+
+  # SL/TP mód (range-arányos, BTC-en automatikusan skálázódik)
+  sl_mode: range_pct
+  tp_mode: range_pct
+  sl_range_pct: 0.20
+  tp_range_pct: 0.50
+
+  sl_dollars: 500.0                # ← skálázott (backup)
+  tp_dollars: 800.0
+  sl_atr_mult: 1.5
+  tp_atr_mult: 2.5
+  atr_period: 14
+  min_sl_distance: 10.0            # ← skálázott: 0.10 → 10.0
+
+  enable_session_filter: false     # ← BTC 24/7-en megy, session-filter off
+  session_start: 0
+  session_end: 24
+
+  trend_filter_enabled: true
+  trend_filter_tf: 4h
+  trend_filter_ema_fast: 9
+  trend_filter_ema_slow: 21
