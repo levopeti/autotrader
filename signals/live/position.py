@@ -33,19 +33,25 @@ class PositionState(str, Enum):
 
 @dataclass
 class PositionConfig:
-    epic:      str
-    direction: Direction
-    size:      float
-    zone_low:  float
-    zone_high: float
-    tp:        float
-    sl:        float
-    tp_idx:    int
-    send_date: str
-    edited:    bool
-    chat_id:   int
-    raw_text:  str
-    chat_name: str
+    epic:       str
+    direction:  Direction
+    size:       float
+    zone_low:   float
+    zone_high:  float
+    tp:         float
+    sl:         float
+    tp_idx:     int
+    send_date:  str
+    edited:     bool
+    chat_id:    int
+    raw_text:   str
+    chat_name:  str
+    message_id: Optional[int] = None
+    # TP-ladder: ha mindkét ár megadva, az OPEN állapotú pozíció figyeli
+    # a ladder_trigger_price elérését, és REST-en mozgatja az SL-t a
+    # ladder_dest_price-re. Egyszer aktiválódik.
+    ladder_trigger_price: Optional[float] = None
+    ladder_dest_price:    Optional[float] = None
 
 
 # ─── POSITION ────────────────────────────────────────────────────────────────
@@ -83,6 +89,10 @@ class Position:
 
         self._queue: asyncio.Queue[tuple[float, float]] = asyncio.Queue()
 
+        # TP-ladder állapot — csak akkor releváns, ha config.ladder_*_price ki van töltve
+        self.ladder_done: bool = False
+        self._ladder_inflight: bool = False   # ne tüzeljen párhuzamosan
+
     # ── Nyilvános ─────────────────────────────────────────────────────────────
 
     def init_check(self):
@@ -102,6 +112,24 @@ class Position:
     def on_price(self, bid: float, ask: float) -> None:
         if self.state == PositionState.WAITING:
             self._queue.put_nowait((bid, ask))
+            return
+        # TP-ladder: OPEN állapotban figyeljük a trigger-szintet.
+        # A favourable irányban (BUY: bid feljön a trigger fölé, SELL: ask
+        # lemegy a trigger alá) lép. Csak egyszer aktiválódik.
+        if (self.state == PositionState.OPEN
+                and not self.ladder_done
+                and not self._ladder_inflight
+                and self.config.ladder_trigger_price is not None
+                and self.config.ladder_dest_price is not None):
+            trig = self.config.ladder_trigger_price
+            dest = self.config.ladder_dest_price
+            should_fire = (
+                (self.config.direction == Direction.BUY and bid >= trig)
+                or (self.config.direction == Direction.SELL and ask <= trig)
+            )
+            if should_fire:
+                self._ladder_inflight = True
+                asyncio.create_task(self._apply_ladder(dest))
 
     def cancel(self) -> bool:
         if self.state == PositionState.WAITING:
@@ -154,6 +182,7 @@ class Position:
             "chat_id":        self.config.chat_id,
             "chat_name":      self.config.chat_name,
             "tp_idx":         self.config.tp_idx,
+            "message_id":     self.config.message_id if self.config.message_id is not None else "",
         }
 
     def __repr__(self):
@@ -210,16 +239,34 @@ class Position:
             "CST": self.cst, "X-SECURITY-TOKEN": self.token,
             "Content-Type": "application/json",
         }
-        body = {
-            "epic":           self.config.epic,
-            "direction":      self.config.direction.value,
-            "size":           self.config.size,
-            "guaranteedStop": False,
-            "profitLevel":    self.config.tp,
-            # "stopLevel":      self.config.sl,
-            "trailingStop":   True,
-            "stopDistance":   abs(self.config.sl - (self.config.zone_high + self.config.zone_low) / 2),
-        }
+        # Ha a config-on van TP-ladder, KIKAPCSOLJUK a Capital natív
+        # trailingStop-ját és FIX stopLevel-t adunk. Egyébként ütköznének:
+        # a Capital trailing folyamatosan mozgatja az SL-t, a mi ladder
+        # logikánk pedig egy specifikus eseményhez (TP3 hit) köti.
+        # A két mechanika rétegezve kiszámíthatatlanná teszi a viselkedést.
+        has_ladder = (self.config.ladder_trigger_price is not None
+                      and self.config.ladder_dest_price is not None)
+        if has_ladder:
+            body = {
+                "epic":           self.config.epic,
+                "direction":      self.config.direction.value,
+                "size":           self.config.size,
+                "guaranteedStop": False,
+                "profitLevel":    self.config.tp,
+                "trailingStop":   False,
+                "stopLevel":      self.config.sl,
+            }
+        else:
+            # ANN-recept: nincs ladder, Capital trailing marad a SL-mozgatáshoz
+            body = {
+                "epic":           self.config.epic,
+                "direction":      self.config.direction.value,
+                "size":           self.config.size,
+                "guaranteedStop": False,
+                "profitLevel":    self.config.tp,
+                "trailingStop":   True,
+                "stopDistance":   abs(self.config.sl - (self.config.zone_high + self.config.zone_low) / 2),
+            }
         try:
             async with aiohttp.ClientSession() as s:
                 async with s.post(
@@ -308,6 +355,46 @@ class Position:
         logger.error("[POS] Confirm végleg sikertelen: %s", self)
         self.state     = PositionState.ERROR
         self.error_msg = "confirm_timeout"
+
+    async def _apply_ladder(self, dest_price: float) -> None:
+        """TP-ladder: amint az ár eléri a config.ladder_trigger_price-t, az SL
+        átkerül a dest_price-re. REST PUT /api/v1/positions/{dealId}."""
+        if self.deal_id is None:
+            logger.warning("[POS] ⛔ LADDER: nincs deal_id, kihagyom (%s)", self)
+            self.ladder_done = True
+            self._ladder_inflight = False
+            return
+        headers = {
+            "CST": self.cst, "X-SECURITY-TOKEN": self.token,
+            "Content-Type": "application/json",
+        }
+        # trailingStop=False kell, hogy az abszolút stopLevel ne ütközzön a
+        # nyitáskor beállított Capital-trailing stop-pal
+        body = {"trailingStop": False, "stopLevel": float(dest_price)}
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.put(
+                    f"{self.base_url}/api/v1/positions/{self.deal_id}",
+                    headers=headers, json=body,
+                ) as r:
+                    text = await r.text()
+                    if r.status >= 400:
+                        logger.error(
+                            "[POS] ❌ LADDER REST hiba %d | dealId:%s | body=%s | resp=%s",
+                            r.status, self.deal_id, body, text[:300],
+                        )
+                        # in_flight feloldjuk, hogy a következő tick újra próbálkozhasson
+                        self._ladder_inflight = False
+                        return
+                    logger.warning(
+                        "[POS] ✅ LADDER tüzelt | dealId:%s | trigger=%.2f → SL=%.2f",
+                        self.deal_id, self.config.ladder_trigger_price, dest_price,
+                    )
+                    self.stop_level = dest_price
+                    self.ladder_done = True
+        except Exception as e:
+            logger.error("[POS] LADDER kivétel: %s | %s", e, self)
+            self._ladder_inflight = False
         self._manager.csv_update_terminal(self)
 
     def apply_rest_data(self, api_pos: dict) -> None:
@@ -342,10 +429,25 @@ class Position:
         """
         Transactions végpontról lekéri az összes záráskori adatot,
         majd frissíti a CSV sort.
+
+        FONTOS megfigyelések a Capital demo API-ról:
+        - A tranzakció dealId-je NEM az opening dealId, hanem a closing
+          (jellemzően opening last-char + 1). Ezért nem szabad `dealId`
+          paraméterrel szűrni a GET-en — saját egyezést végzünk.
+        - A PnL-t a `size` mezőben adja vissza (string), nem `profitAndLoss`-ban.
+        - `closeLevel` / `openLevel` nincs a tranzakcióban — azok a Position
+          object-ben már megvannak (REST poll vagy OPU-ból).
         """
         await asyncio.sleep(2)
         headers = {"CST": self.cst, "X-SECURITY-TOKEN": self.token}
-        params  = {"dealId": self.deal_id, "lastPeriod": 86400}
+        # `lastPeriod` csak meghatározott értékeket fogad el (86400 = 1d, max
+        # itt nálunk). Mivel a poll <= 5 min, ennyi bőven elég.
+        params  = {"lastPeriod": 86400}
+
+        # Az opening dealId-vel egyező CLOSING dealId-t a prefix alapján
+        # azonosítjuk. Az utolsó karakterben különbözik (hex offset),
+        # mind az első 35 char egyezik.
+        prefix = (self.deal_id or "")[:-1]
 
         for attempt in range(5):
             try:
@@ -355,25 +457,32 @@ class Position:
                         headers=headers, params=params
                     ) as r:
                         data  = await r.json()
-                        items = data.get("transactions", [])
+                        items = data.get("transactions", []) or []
 
-                        if not items:
-                            logger.debug("[CLOSE] Transactions üres, %d. kísérlet...", attempt + 1)
+                        # Csak GOLD-trade-ek, melyek dealId-je a mi opening prefix-ünkkel kezdődnek
+                        candidates = [
+                            t for t in items
+                            if (t.get("transactionType") == "TRADE"
+                                and str(t.get("dealId", "")).startswith(prefix)
+                                and t.get("dealId") != self.deal_id)
+                        ]
+                        if not candidates:
+                            logger.debug("[CLOSE] nincs egyező tranzakció, %d. kísérlet...", attempt + 1)
                             await asyncio.sleep(2 ** attempt)
                             continue
 
-                        t = items[0]
-                        self.open_level   = self.open_level  or t.get("openLevel")
-                        self.close_level  = self.close_level or t.get("closeLevel")
-                        self.realised_pnl = t.get("profitAndLoss")
-                        self.currency     = self.currency    or t.get("currency")
+                        # A legutolsó match a closing
+                        t = max(candidates, key=lambda x: x.get("dateUtc", ""))
+                        # A `size` mező a realised PnL (string!) — float-ra konvertáljuk
+                        try:
+                            self.realised_pnl = float(t.get("size"))
+                        except (TypeError, ValueError):
+                            self.realised_pnl = None
+                        self.currency = self.currency or t.get("currency")
 
                         logger.info(
-                            "[CLOSE] ✅ | open:%.5f close:%.5f pnl:%s %s",
-                            self.open_level  or 0,
-                            self.close_level or 0,
-                            self.realised_pnl,
-                            self.currency or "",
+                            "[CLOSE] ✅ | dealId(close)=%s | pnl=%s %s",
+                            t.get("dealId"), self.realised_pnl, self.currency or "",
                         )
                         self._manager.csv_update_terminal(self)
                         return

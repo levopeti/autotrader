@@ -5,7 +5,7 @@ import tempfile
 import shutil
 
 from datetime import datetime, timezone
-from signal.signal_utils.position import Position
+from signals.live.position import Position
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
@@ -48,6 +48,7 @@ CSV_FIELDS = [
     "chat_id",
     "chat_name",
     "tp_idx",
+    "message_id",       # Telegram message id (edit-azonosító)
     # Hiba
     "error_msg",
 ]

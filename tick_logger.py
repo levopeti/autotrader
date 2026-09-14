@@ -1,52 +1,106 @@
-import os
-import json
-import time
+"""
+Multi-instrument tick gyűjtő — egy folyamatból több epic-re iratkozik fel.
+
+Konfigurálás: data/tick_logger_config.yaml (minden instrumentum + enabled flag).
+Output: data/tick_data_{name}.parquet, atomikus write-tal.
+
+Indítás:
+  python -m tick_logger
+  python tick_logger.py --config data/tick_logger_config.yaml
+"""
+from __future__ import annotations
+
+import argparse
 import asyncio
+import json
 import logging
+import os
+import sys
+import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Dict, List, Optional
 
 import pandas as pd
 import requests
 import websockets
+import yaml
 
-with open('keys_urls.json', 'r') as f:
-    config = json.load(f)
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-API_BASE_URL = "https://demo-api-capital.backend-capital.com"
+from utils.keys import load_keys
+
+
+API_BASE_URL_DEMO = "https://demo-api-capital.backend-capital.com"
+API_BASE_URL_LIVE = "https://api-capital.backend-capital.com"
 WS_URL = "wss://api-streaming-capital.backend-capital.com/connect"
-API_KEY = config["capital_api_key"]
-IDENTIFIER = config["capital_login"]
-PASSWORD = config["capital_pw"]
-CAPITAL_ACCOUNT_ID = "320258870701535518"
 
-MARKET_SYMBOL = os.getenv("MARKET_SYMBOL", "GOLD")
-TICK_PARQUET = os.getenv("TICK_PARQUET", "./data/tick_data_GOLD.parquet")
-FLUSH_EVERY_N_TICKS = int(os.getenv("FLUSH_EVERY_N_TICKS", "500"))
-FLUSH_EVERY_SEC = int(os.getenv("FLUSH_EVERY_SEC", "30"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-logger = logging.getLogger("capital_tick_logger")
+logger = logging.getLogger("tick_logger")
 
+
+# ─── Konfig ────────────────────────────────────────────────────────────────────
+
+@dataclass
+class InstrumentCfg:
+    name: str                       # parquet-fájlnév + log-azonosító
+    epic: Optional[str] = None      # ha None, auto-resolve a name-mel
+    enabled: bool = True
+
+
+@dataclass
+class TickLoggerConfig:
+    output_dir: Path
+    flush_every_n_ticks: int
+    flush_every_sec: int
+    demo: bool
+    instruments: List[InstrumentCfg]
+
+
+def load_config(path: Path) -> TickLoggerConfig:
+    with open(path, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+    return TickLoggerConfig(
+        output_dir=Path(raw.get("output_dir", "./data")),
+        flush_every_n_ticks=int(raw.get("flush_every_n_ticks", 500)),
+        flush_every_sec=int(raw.get("flush_every_sec", 30)),
+        demo=bool(raw.get("demo", True)),
+        instruments=[
+            InstrumentCfg(
+                name=str(i["name"]),
+                epic=i.get("epic"),
+                enabled=bool(i.get("enabled", True)),
+            )
+            for i in raw.get("instruments", [])
+        ],
+    )
+
+
+# ─── Capital REST kliens (csak login + resolve + ping) ─────────────────────────
 
 class CapitalClient:
-    def __init__(self):
+    def __init__(self, demo: bool = True):
+        cfg = load_keys()
+        self.api_key = cfg["capital_api_key"]
+        self.identifier = cfg["capital_login"]
+        self.password = cfg["capital_pw"]
+        self.api_base_url = API_BASE_URL_DEMO if demo else API_BASE_URL_LIVE
         self.session = requests.Session()
-        self.session.headers.update({
-            "X-CAP-API-KEY": API_KEY,
-            "Content-Type": "application/json",
-        })
-        self.cst = None
-        self.security_token = None
-        self.current_account_id = None
+        self.session.headers.update({"X-CAP-API-KEY": self.api_key, "Content-Type": "application/json"})
+        self.cst: Optional[str] = None
+        self.security_token: Optional[str] = None
 
     def _request(self, method, path, **kwargs):
-        url = f"{API_BASE_URL}{path}"
+        url = f"{self.api_base_url}{path}"
         r = self.session.request(method, url, timeout=30, **kwargs)
         r.raise_for_status()
         return r
 
-    def ensure_login(self):
+    def ensure_login(self) -> None:
         if self.cst and self.security_token:
             try:
                 self._request("GET", "/api/v1/ping")
@@ -54,238 +108,251 @@ class CapitalClient:
             except Exception:
                 self.cst = None
                 self.security_token = None
-
-        payload = {
-            "identifier": IDENTIFIER,
-            "password": PASSWORD,
-            "encryptedPassword": False,
-        }
+        payload = {"identifier": self.identifier, "password": self.password, "encryptedPassword": False}
         r = self._request("POST", "/api/v1/session", json=payload)
         self.cst = r.headers.get("CST")
         self.security_token = r.headers.get("X-SECURITY-TOKEN")
-        self.session.headers.update({
-            "CST": self.cst,
-            "X-SECURITY-TOKEN": self.security_token,
-        })
-        data = r.json()
-        self.current_account_id = data.get("accountId") or data.get("currentAccountId")
-        logger.info("Logged in. accountId=%s", self.current_account_id)
+        self.session.headers.update({"CST": self.cst, "X-SECURITY-TOKEN": self.security_token})
+        logger.info("Login OK")
 
-    def get_accounts(self):
-        r = self._request("GET", "/api/v1/accounts")
-        data = r.json()
-        if isinstance(data, dict):
-            return data.get("accounts", data.get("accountInfo", []))
-        return data
-
-    def get_session_details(self):
-        r = self._request("GET", "/api/v1/session")
-        return r.json()
-
-    def switch_account(self, account_id):
-        payload = {"accountId": str(account_id)}
-        self._request("PUT", "/api/v1/session", json=payload)
-        session = self.get_session_details()
-        self.current_account_id = session.get("accountId")
-        logger.info("Current account after switch: %s", self.current_account_id)
-
-    def ensure_account(self, account_id):
-        if not account_id:
-            return
-        accounts = self.get_accounts()
-        account_ids = [str(a.get("accountId")) for a in accounts if isinstance(a, dict)]
-        if str(account_id) not in account_ids:
-            raise RuntimeError(f"Requested CAPITAL_ACCOUNT_ID {account_id} not found in available accounts: {account_ids}")
-        session = self.get_session_details()
-        current_account_id = str(session.get("accountId"))
-        if current_account_id != str(account_id):
-            self.switch_account(str(account_id))
-
-    def resolve_epic(self):
-        r = self._request("GET", f"/api/v1/markets?searchTerm={MARKET_SYMBOL}")
-        data = r.json()
+    def resolve_epic(self, symbol: str) -> Optional[str]:
+        try:
+            data = self._request("GET", f"/api/v1/markets?searchTerm={symbol}").json()
+        except Exception as e:
+            logger.warning("resolve_epic(%s) hiba: %s", symbol, e)
+            return None
         markets = data.get("markets", []) if isinstance(data, dict) else []
         if not markets:
-            raise RuntimeError(f"No market found for symbol: {MARKET_SYMBOL}")
+            return None
         for m in markets:
             epic = m.get("epic", "")
-            if "GOLD" in epic or epic == MARKET_SYMBOL:
+            if symbol.upper() in epic.upper() or m.get("symbol", "").upper() == symbol.upper():
                 return epic
-        return markets[0]["epic"]
+        return markets[0].get("epic")
 
+
+# ─── Tick buffer (instrumentumonként egy) ──────────────────────────────────────
 
 class TickBuffer:
-    def __init__(self, parquet_path, flush_every_n_ticks=500):
-        self.parquet_path = Path(parquet_path)
+    COLUMNS = ["timestamp_utc", "instrument", "epic", "bid", "ask", "mid", "spread", "tick_source_ts"]
+
+    def __init__(self, name: str, parquet_path: Path, flush_every_n_ticks: int, flush_every_sec: int):
+        self.name = name
+        self.parquet_path = parquet_path
         self.flush_every_n_ticks = flush_every_n_ticks
-        self.rows = []
+        self.flush_every_sec = flush_every_sec
+        self.rows: List[Dict] = []
         self.last_flush_ts = time.time()
-        self.columns = [
-            "timestamp_utc", "instrument", "epic", "bid", "ask", "mid", "spread", "tick_source_ts"
-        ]
+        self.total_ticks = 0
 
-    def add_tick(self, row):
+    def add(self, row: Dict) -> None:
         self.rows.append(row)
+        self.total_ticks += 1
 
-    def as_dataframe(self):
-        if not self.rows:
-            return pd.DataFrame(columns=self.columns)
-        df = pd.DataFrame(self.rows, columns=self.columns)
-        df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"], utc=True, errors="coerce")
-        return df
-
-    def should_flush(self, force=False):
-        if force:
+    def _should_flush(self, force: bool) -> bool:
+        if force and self.rows:
             return True
         if len(self.rows) >= self.flush_every_n_ticks:
             return True
-        if self.rows and (time.time() - self.last_flush_ts >= FLUSH_EVERY_SEC):
+        if self.rows and (time.time() - self.last_flush_ts >= self.flush_every_sec):
             return True
         return False
 
-    def flush(self, force=False):
-        if not self.should_flush(force=force) or not self.rows:
+    def flush(self, force: bool = False) -> int:
+        if not self._should_flush(force):
             return 0
-        df = self.as_dataframe()
+        df = pd.DataFrame(self.rows, columns=self.COLUMNS)
+        df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"], utc=True, errors="coerce")
 
         if self.parquet_path.exists():
-            existing = pd.read_parquet(self.parquet_path)
-            df = pd.concat([existing, df], ignore_index=True)
+            try:
+                existing = pd.read_parquet(self.parquet_path)
+                df = pd.concat([existing, df], ignore_index=True)
+            except Exception as e:
+                logger.warning("[%s] parquet read hiba (lehet konkurens write): %s — átugorjuk a flush-t",
+                               self.name, e)
+                return 0
 
-        df.to_parquet(self.parquet_path, index=False, compression="snappy")
+        # Atomikus write: temp.parquet.tmp + os.replace
+        tmp_path = self.parquet_path.with_suffix(self.parquet_path.suffix + ".tmp")
+        df.to_parquet(tmp_path, index=False, compression="snappy")
+        os.replace(tmp_path, self.parquet_path)
+
         n = len(self.rows)
         self.rows = []
         self.last_flush_ts = time.time()
-        logger.info("Flushed %s ticks to %s", n, self.parquet_path)
+        logger.info("[%s] flushed %s ticks → %s (total %s)", self.name, n, self.parquet_path.name, self.total_ticks)
         return n
 
 
-def extract_tick_row(epic, payload):
-    now_utc = datetime.now(timezone.utc).isoformat()
+# ─── Tick row extraction ───────────────────────────────────────────────────────
+
+def extract_tick_row(name: str, epic: str, payload: Dict) -> Optional[Dict]:
     bid = payload.get("bid")
     ask = payload.get("offer") or payload.get("ask") or payload.get("ofr")
     if bid is None or ask is None:
         return None
-    bid = float(bid)
-    ask = float(ask)
+    try:
+        bid = float(bid)
+        ask = float(ask)
+    except (TypeError, ValueError):
+        return None
     mid = (bid + ask) / 2.0
     spread = ask - bid
-    tick_source_ts = payload.get("updateTimestamp") or payload.get("timestamp") or payload.get("utm") or payload.get("t")
     return {
-        "timestamp_utc": now_utc,
-        "instrument": epic,
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "instrument": name,
         "epic": epic,
         "bid": bid,
         "ask": ask,
         "mid": mid,
         "spread": spread,
-        "tick_source_ts": tick_source_ts,
+        "tick_source_ts": payload.get("updateTimestamp") or payload.get("timestamp")
+                          or payload.get("utm") or payload.get("t"),
     }
 
+
+# ─── Main loop ─────────────────────────────────────────────────────────────────
 
 async def ping_loop(ws, cst, security_token):
     while True:
         await asyncio.sleep(20)
-        await ws.send(json.dumps({
-            "destination": "ping",
-            "correlationId": int(time.time()),
-            "cst": cst,
-            "securityToken": security_token,
-        }))
+        try:
+            await ws.send(json.dumps({
+                "destination": "ping",
+                "correlationId": int(time.time()),
+                "cst": cst,
+                "securityToken": security_token,
+            }))
+        except Exception:
+            return
 
 
-async def flush_loop(buffer):
+async def flush_loop(buffers: Dict[str, TickBuffer]):
     while True:
         await asyncio.sleep(5)
-        buffer.flush(force=False)
+        for buf in buffers.values():
+            try:
+                buf.flush(force=False)
+            except Exception as e:
+                logger.warning("[%s] flush hiba: %s", buf.name, e)
 
 
-async def ws_collect_ticks(client, epic, buffer):
+async def ws_collect_ticks(client: CapitalClient,
+                           epic_to_name: Dict[str, str],
+                           buffers: Dict[str, TickBuffer]) -> None:
+    epics = list(epic_to_name.keys())
     while True:
         try:
             client.ensure_login()
             async with websockets.connect(WS_URL, ping_interval=20, ping_timeout=20) as ws:
-                sub = {
+                # Egyetlen subscribe-üzenet, az összes epic-kel
+                await ws.send(json.dumps({
                     "destination": "marketData.subscribe",
-                    "correlationId": 1,
+                    "correlationId": int(time.time()),
                     "cst": client.cst,
                     "securityToken": client.security_token,
-                    "payload": {"epics": [epic]},
-                }
-                await ws.send(json.dumps(sub))
-                logger.info("Subscribed to %s tick stream", epic)
+                    "payload": {"epics": epics},
+                }))
+                logger.info("Subscribed to %d epics: %s", len(epics), epics)
+
                 ping_task = asyncio.create_task(ping_loop(ws, client.cst, client.security_token))
                 try:
                     async for message in ws:
                         data = json.loads(message)
                         payload = data.get("payload", {})
-                        if isinstance(payload, dict) and epic in payload:
-                            tick_payload = payload[epic]
-                            row = extract_tick_row(epic, tick_payload)
+                        if not isinstance(payload, dict):
+                            continue
+                        # 1) Kulcsolt forma: payload[epic] = {bid, ofr, ...}
+                        any_matched = False
+                        for e, name in epic_to_name.items():
+                            if e in payload and isinstance(payload[e], dict):
+                                row = extract_tick_row(name, e, payload[e])
+                                if row is not None:
+                                    buffers[name].add(row)
+                                    any_matched = True
+                        if any_matched:
+                            continue
+                        # 2) Flat forma: payload {epic, bid, ofr, ...}
+                        flat_epic = payload.get("epic")
+                        if flat_epic and flat_epic in epic_to_name:
+                            row = extract_tick_row(epic_to_name[flat_epic], flat_epic, payload)
                             if row is not None:
-                                buffer.add_tick(row)
-                                buffer.flush(force=False)
-                        elif isinstance(payload, dict):
-                            row = extract_tick_row(epic, payload)
-                            if row is not None:
-                                buffer.add_tick(row)
-                                buffer.flush(force=False)
+                                buffers[epic_to_name[flat_epic]].add(row)
                 finally:
                     ping_task.cancel()
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            logger.warning("WebSocket loop error: %s", e)
-            buffer.flush(force=True)
+            logger.warning("WS loop error: %s — 5s múlva újra", e)
+            # Vészflush, hogy ne veszítsük a memóriában lévő tickeket
+            for buf in buffers.values():
+                try:
+                    buf.flush(force=True)
+                except Exception:
+                    pass
             await asyncio.sleep(5)
 
 
-def reconstruct_fill_from_ticks(tick_parquet, signal_time_utc, direction):
-    df = pd.read_parquet(tick_parquet)
-    if df.empty:
-        raise ValueError("Tick Parquet is empty")
-    df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"], utc=True, errors="coerce")
-    signal_time = pd.to_datetime(signal_time_utc, utc=True, errors="coerce")
-    df = df.dropna(subset=["timestamp_utc"]).sort_values("timestamp_utc")
-    candidates = df[df["timestamp_utc"] >= signal_time]
-    if candidates.empty:
-        raise ValueError("No tick found at or after signal time")
-    tick = candidates.iloc[0]
-    exec_price = tick["ask"] if str(direction).upper() == "BUY" else tick["bid"]
-    return {
-        "timestamp_utc": tick["timestamp_utc"].isoformat(),
-        "direction": direction,
-        "exec_price": float(exec_price),
-        "bid": float(tick["bid"]),
-        "ask": float(tick["ask"]),
-        "spread": float(tick["spread"]),
-    }
-
-
-async def main():
-    if not API_KEY or not IDENTIFIER or not PASSWORD:
-        raise RuntimeError("Missing CAPITAL_API_KEY / CAPITAL_IDENTIFIER / CAPITAL_PASSWORD")
-
-    client = CapitalClient()
+async def main_async(cfg_path: Path) -> None:
+    cfg = load_config(cfg_path)
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    client = CapitalClient(demo=cfg.demo)
     client.ensure_login()
-    client.ensure_account(CAPITAL_ACCOUNT_ID)
-    epic = client.resolve_epic()
-    buffer = TickBuffer(TICK_PARQUET, flush_every_n_ticks=FLUSH_EVERY_N_TICKS)
 
-    logger.info("Tick logger started | epic=%s | parquet=%s | flush_n=%s | flush_sec=%s", epic, TICK_PARQUET, FLUSH_EVERY_N_TICKS, FLUSH_EVERY_SEC)
+    enabled = [i for i in cfg.instruments if i.enabled]
+    if not enabled:
+        logger.error("Nincs enabled instrumentum a configban (%s)", cfg_path)
+        return
+
+    epic_to_name: Dict[str, str] = {}
+    buffers: Dict[str, TickBuffer] = {}
+    for inst in enabled:
+        epic = inst.epic or client.resolve_epic(inst.name)
+        if epic is None:
+            logger.warning("Nem találom az epic-et: %s → kihagyva", inst.name)
+            continue
+        parquet_path = cfg.output_dir / f"tick_data_{inst.name}.parquet"
+        buffers[inst.name] = TickBuffer(inst.name, parquet_path, cfg.flush_every_n_ticks, cfg.flush_every_sec)
+        epic_to_name[epic] = inst.name
+        logger.info("Instrument loaded: %s → epic=%s, parquet=%s", inst.name, epic, parquet_path.name)
+
+    if not buffers:
+        logger.error("Egy instrumentumhoz se sikerült epic-et felodani — leállás")
+        return
 
     try:
         await asyncio.gather(
-            ws_collect_ticks(client, epic, buffer),
-            flush_loop(buffer),
+            ws_collect_ticks(client, epic_to_name, buffers),
+            flush_loop(buffers),
         )
     finally:
-        buffer.flush(force=True)
+        # Végleges flush
+        for buf in buffers.values():
+            try:
+                buf.flush(force=True)
+            except Exception:
+                pass
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description="Multi-instrument Capital.com tick logger")
+    p.add_argument("--config", default=str(ROOT / "data" / "tick_logger_config.yaml"),
+                   help="YAML config útvonal")
+    args = p.parse_args()
+    cfg_path = Path(args.config)
+    if not cfg_path.is_absolute():
+        cfg_path = (ROOT / cfg_path).resolve()
+    while True:
+        try:
+            asyncio.run(main_async(cfg_path))
+        except KeyboardInterrupt:
+            logger.info("Leállítás (Ctrl-C)")
+            break
+        except Exception as e:
+            logger.exception("Fatal hiba: %s — 60s múlva újra", e)
+            time.sleep(60)
 
 
 if __name__ == "__main__":
-    while True:
-        try:
-            asyncio.run(main())
-        except KeyboardInterrupt:
-            break
-        except Exception as e:
-            print(e)
+    main()

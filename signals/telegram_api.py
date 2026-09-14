@@ -1,114 +1,134 @@
-import json
-import zmq
+"""
+Telegram listener — feliratkozik csatornákra, beolvas új és szerkesztett üzeneteket,
+archiválja MINDET (parsolt + nyers) a SignalArchive-ban, és a parser-által érvényes
+jeleket ZMQ-n keresztül továbbküldi a position_manager-nek.
+"""
+import sys
 from datetime import datetime, timezone
-from telethon import TelegramClient, events
-from signal_parser import signal_parser
+from pathlib import Path
 from pprint import pprint
 
-with open('../keys_urls.json', 'r') as f:
-    config = json.load(f)
+import yaml
+import zmq
+from telethon import TelegramClient, events
 
+# A repository-gyökeret importálnunk kell a `signals` package-hoz
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from signals.archive import SignalArchive
+from signals.parsers import parse
+from utils.keys import load_keys
+
+
+config = load_keys()
 API_ID = config["telegram_api_id"]
 API_HASH = config["telegram_api_hash"]
 
-# A csatornák listája (username vagy numerikus ID)
-traderz_gold_wip = -1003496306840
-technical_pips_vip = -1002001216034
-gold_trader_mo = "@gold_Trader_mo_gtmofx_Official"
+# ── Csatornák — a signals/channels.yaml-ból ──
+def _load_channels() -> list:
+    cfg_path = Path(__file__).resolve().parent / "channels.yaml"
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+    out = []
+    for entry in raw.get("channels", []):
+        if not entry.get("enabled", False):
+            continue
+        out.append(entry["chat"])
+    return out
 
-ann_zerofloat = "@livetradeann"
-gold_signal_vip = "@GoldSignalsVipOriginal"
-mychal_fx = "@CHEMPION_HUB"
-CHANNELS = [
-    # traderz_gold_wip,
-    # ann_zerofloat,
-    technical_pips_vip,
-    # gold_trader_mo,
-    # gold_signal_vip,
-    # mychal_fx
-]
 
-client = TelegramClient('session_neve', API_ID, API_HASH)
+CHANNELS = _load_channels()
+print(f"[INIT] Telegram csatornák: {CHANNELS}")
+
+# ── ZMQ + Telethon kliens ──
+client = TelegramClient(str(ROOT / "session_neve"), API_ID, API_HASH)
 
 context = zmq.Context()
 socket = context.socket(zmq.PUSH)
 socket.connect("tcp://localhost:5555")
 
-tp_idx_map = {
-    1: 3,
-    2: 2
+# ── Pozíció méretezés TP-szám szerint ──
+# TP1-en a legnagyobb pozíció (3 lot), TP2-n 2 lot, TP3-tól 1 lot.
+# Ha valaki később konfigfile-ba akarja venni: ez ide jön.
+TP_IDX_SIZE_MAP = {
+    1: 3.0,
+    2: 2.0,
 }
-entry_zone_expand = 1
+DEFAULT_TP_SIZE = 1.0
+ENTRY_ZONE_EXPAND = 1.0
+
+# ── SignalArchive ──
+archive = SignalArchive(ROOT / "data" / "signals")
 
 
-def log_print(message, logfile="app.log"):
+def log_print(message, logfile=str(ROOT / "telegram.log")):
     pprint(message)
     with open(logfile, "a", encoding="utf-8") as f:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         f.write(f"{now} - {message}\n")
 
 
-def send_position(event, edited):
-    signal_dict, error_msg = signal_parser(event.raw_text)
+def _send_position(event, edited: bool) -> None:
+    raw = event.raw_text
+    parsed = parse(raw, chat_id=event.chat.id)
 
-    if len(signal_dict) == 0:
-        log_print("wrong message\n", "telegram.log")
-        log_print(error_msg)
-    else:
-        log_print("message ok\n", "telegram.log")
-        # log_print(event.raw_text)
-        for tp_idx, tp in enumerate(signal_dict["tp_list"]):
-            position_dict = {
-                "epic": "GOLD",
-                "direction": signal_dict["direction"],
-                "size": 1.0 * tp_idx_map.get(tp_idx + 1, 1),
-                "zone_low": min(signal_dict["entries"]) - entry_zone_expand,
-                "zone_high": max(signal_dict["entries"]) + entry_zone_expand,
-                "tp": tp,
-                "sl": signal_dict["sl_list"][0],
-                "tp_idx": tp_idx + 1,
-                "raw_text": event.raw_text,
-                "send_date": datetime.now(timezone.utc).strftime('%y:%m:%d:%H:%M:%S'),
-                "edited": edited,
-                "chat_id": event.chat.id,
-                "chat_name": event.chat.title,
-            }
-            socket.send_pyobj(position_dict)
+    # MINDEN üzenet archiválódik — a parser-fejlesztéshez utólag is van adat
+    archive.append(
+        raw_text=raw,
+        parsed=parsed,
+        chat_id=event.chat.id,
+        chat_name=getattr(event.chat, "title", "") or "",
+        message_id=event.id,
+        edited=edited,
+        parent_message_id=event.id if edited else None,
+    )
 
-    # if ("xau" in event.raw_text.capitalize() or "gold" in event.raw_text.capitalize()) and (
-    #         "sell" in event.raw_text.capitalize() or "buy" in event.raw_text.capitalize()):
-    #     position_dict = parse_xauusd_signal(event.raw_text)
-    #     if position_dict is not None:
-    #         socket.send_pyobj({"raw_text": event.raw_text,
-    #                            "position_dict": position_dict,
-    #                            "chat_id": event.chat.id,
-    #                            "send_date": datetime.now().strftime('%y:%m:%d:%H:%M:%S'),
-    #                            "edited": edited
-    #                            })
-    #         log_print("message ok\n", "telegram.log")
-    #     else:
-    #         log_print("message parse error\n", "telegram.log")
-    # else:
-    #     log_print("wrong message\n", "telegram.log")
+    if not parsed.valid:
+        log_print(f"[PARSE] dropped: {parsed.reason}")
+        return
+
+    log_print(f"[PARSE] ok: {parsed.direction} {parsed.entry_low}-{parsed.entry_high} "
+              f"SL={parsed.sl} TPs={parsed.tp_list}")
+
+    # Minden TP-re külön ZMQ üzenet (a position_manager külön pozíciókként kezeli)
+    for tp_idx, tp in enumerate(parsed.tp_list):
+        size = TP_IDX_SIZE_MAP.get(tp_idx + 1, DEFAULT_TP_SIZE)
+        position_dict = {
+            "epic": "GOLD",
+            "direction": parsed.direction,
+            "size": float(size),
+            "zone_low": parsed.entry_low - ENTRY_ZONE_EXPAND,
+            "zone_high": parsed.entry_high + ENTRY_ZONE_EXPAND,
+            "tp": float(tp),
+            "sl": float(parsed.sl),
+            "tp_idx": tp_idx + 1,
+            "raw_text": raw,
+            "send_date": datetime.now(timezone.utc).strftime("%y:%m:%d:%H:%M:%S"),
+            "edited": edited,
+            "chat_id": event.chat.id,
+            "chat_name": getattr(event.chat, "title", "") or "",
+            "message_id": event.id,
+        }
+        socket.send_pyobj(position_dict)
 
 
 @client.on(events.NewMessage(chats=CHANNELS))
 async def on_new_message(event):
     chat = await event.get_chat()
-    log_print(f"[NEW][{chat.title}] id={event.id}\n\n{event.raw_text}", "telegram.log")
-    log_print("\n" + "*" * 10, "telegram.log")
-    send_position(event, edited=False)
+    log_print(f"[NEW][{chat.title}] id={event.id}\n\n{event.raw_text}")
+    _send_position(event, edited=False)
 
 
 @client.on(events.MessageEdited(chats=CHANNELS))
 async def on_edited_message(event):
     chat = await event.get_chat()
-    log_print(f"[EDIT][{chat.title}] id={event.id}\n\n{event.raw_text}", "telegram.log")
-    log_print("\n" + "*" * 10, "telegram.log")
-    send_position(event, edited=True)
+    log_print(f"[EDIT][{chat.title}] id={event.id}\n\n{event.raw_text}")
+    _send_position(event, edited=True)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     client.start()
     try:
         client.run_until_disconnected()

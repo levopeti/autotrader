@@ -3,14 +3,14 @@ import aiohttp
 import logging
 from datetime import datetime, timezone
 
-from signal.signal_utils.csv_logger import CsvLogger
-from signal.signal_utils.position import PositionState, Position, PositionConfig
+from signals.live.csv_logger import CsvLogger
+from signals.live.position import PositionState, Position, PositionConfig
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
-MAX_OPEN_POSITIONS = 8
-SENDER_MAX_OPEN_POSITIONS = 6
+MAX_OPEN_POSITIONS = 1           # ← 8 → 1 (védelem edit-flood ellen)
+SENDER_MAX_OPEN_POSITIONS = 1    # ← 6 → 1 (csatornánként max 1 pozíció)
 POSITION_TIMEOUT_SEC = 15 * 60
 CSV_FILE = "positions.csv"
 CS_WRITE_DELAY = 10  # sec
@@ -40,6 +40,32 @@ class PositionManager:
             self.open_count() < self.max_open
             and self.open_count(sender) < self.sender_max_open
         )
+
+    # ── Edit-kezelés: cancel WAITING pozíciók egy üzenetből ───────────────────
+
+    def cancel_waiting_by_message_id(self, message_id: int) -> int:
+        """
+        Cancel-eli az összes WAITING állapotban lévő pozíciót, amik a megadott
+        Telegram message_id-ból jöttek létre. Ha az üzenetet edit-elték, az
+        eredeti WAITING jelek így törlődnek, és a most jövő új parse léphet
+        a helyükre. OPEN pozíciókat NEM nyúlja — azok már a piacon vannak.
+        """
+        if message_id is None:
+            return 0
+        cancelled = 0
+        for pos in self._positions:
+            if pos.config.message_id != message_id:
+                continue
+            if pos.state != PositionState.WAITING:
+                continue
+            if pos.cancel():
+                cancelled += 1
+                self._csv.update_row_by("registered_at", pos.registered_at.isoformat(),
+                                        pos.to_csv_row())
+        if cancelled:
+            logger.info("[MGR] 🔁 EDIT: %d WAITING pozíció cancel-elve (message_id=%s)",
+                        cancelled, message_id)
+        return cancelled
 
     # ── Pozíció hozzáadása ────────────────────────────────────────────────────
 
@@ -218,14 +244,15 @@ class PositionManager:
         """
         /confirms/{dealReference} végpont lekérése.
 
-        Visszatérési mezők:
-            - open_level  ← az API nem adja vissza közvetlenül, nincs confirms-ban
-            - close_level ← confirms 'level' mezője (a végrehajtási árfolyam)
-            - realised_pnl ← confirms 'profit' mezője
-            - currency     ← confirms 'currency' mezője (ha elérhető)
+        A confirms az ORDER végrehajtási visszaigazolása. Az `dealReference`
+        a nyitó order-é, ezért a `level` mező a NYITÓÁR — nem a zárási ár.
+        A `profitLevel` a beállított TP-szint, NEM a tényleges close_level.
+        Lezárási árfolyamot és realised PnL-t a transactions végpont ad.
 
-        Megjegyzés: a /confirms végpont a lezárási árfolyamot ('level') adja vissza,
-        de nyitási árfolyamot nem — azt a transactions végpont tölti ki.
+        Visszatérési mezők (csak ami biztos a confirms-ból):
+            - open_level   ← confirms 'level' (a nyitó-order végrehajtási ára)
+            - currency     ← confirms 'currency' (ha elérhető)
+            - deal_status  ← confirms 'dealStatus' (audit)
         """
         headers = {"CST": self.cst, "X-SECURITY-TOKEN": self.token}
         url = f"{self.base_url}/api/v1/confirms/{deal_reference}"
@@ -256,14 +283,9 @@ class PositionManager:
                             )
                             return {}
 
-                        open_level = data.get("level")
-                        close_level = data.get("profitLevel")
-                        pnl = close_level - open_level if data.get("direction") == "BUY" else open_level - close_level
-
                         return {
                             k: v for k, v in {
-                                "close_level": close_level,
-                                "realised_pnl": round(pnl, 2),
+                                "open_level": data.get("level"),
                                 "currency": data.get("currency"),
                                 "deal_status": data.get("dealStatus"),
                             }.items() if v is not None

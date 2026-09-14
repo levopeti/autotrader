@@ -9,8 +9,8 @@ import zmq
 import zmq.asyncio
 import logging
 
-from signal.signal_utils.position import Direction, PositionConfig, PositionState
-from signal.signal_utils.position_manager import PositionManager
+from signals.live.position import Direction, PositionConfig, PositionState
+from signals.live.position_manager import PositionManager
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
@@ -161,6 +161,7 @@ async def zmq_listener(manager: PositionManager, queue: asyncio.Queue) -> None:
         while True:
             p = await sock.recv_pyobj()
             try:
+                msg_id = p.get("message_id")
                 cfg = PositionConfig(
                     epic=p["epic"],
                     direction=Direction(p["direction"].upper()),
@@ -175,7 +176,13 @@ async def zmq_listener(manager: PositionManager, queue: asyncio.Queue) -> None:
                     edited=bool(p["edited"]),
                     chat_id=int(p["chat_id"]),
                     chat_name=str(p["chat_name"]),
+                    message_id=int(msg_id) if msg_id is not None else None,
                 )
+                # Edit-üzenet: az új parse első tp-jénél cancel-eljük a régi
+                # WAITING-eket ugyanezzel a message_id-vel. Csak egyszer, az első
+                # tp_idx-re — utána ugyanaz az edit többször ne cancel-eljen.
+                if cfg.edited and cfg.message_id is not None and cfg.tp_idx == 1:
+                    manager.cancel_waiting_by_message_id(cfg.message_id)
                 await queue.put(QueueItem(config=cfg))
                 logger.warning(
                     "[ZMQ] 📥 Sorba rakva (%s) (%s) (%.2f–%.2f) TP:%.2f SL:%.2f | Queue: %d",

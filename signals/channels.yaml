@@ -1,0 +1,34 @@
+# Telegram csatornák a signal-figyeléshez.
+#
+# Minden bejegyzés:
+#   name:    emberi névolvasható azonosító (csak logoláshoz)
+#   chat:    Telegram chat_id (numerikus, általában negatív) VAGY username (@kezdettel)
+#   enabled: true → a telegram_api.py feliratkozik rá
+#            false → kihagyja
+#
+# Új csatorna hozzáadása: új sor + restart signals/telegram_api.py.
+
+channels:
+  - name: technical_pips_vip
+    chat: -1002001216034
+    enabled: true
+
+  - name: traderz_gold_wip
+    chat: -1003496306840
+    enabled: true
+
+  - name: gold_trader_mo
+    chat: "@goldTrader_mo_gtmofx"
+    enabled: false                 # NEM signal-küldő csatorna (community chat-üzenetek)
+
+  - name: ann_zerofloat
+    chat: "@livetradeann"
+    enabled: true
+
+  - name: gold_signal_vip
+    chat: "@GoldSignalsVipOriginal"
+    enabled: false
+
+  - name: mychal_fx
+    chat: "@CHEMPION_HUB"
+    enabled: false
