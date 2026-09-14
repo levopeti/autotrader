@@ -44,6 +44,13 @@ class EngineConfig:
     tp_layers: Optional[List[float]] = None
     tp_layer_size_pcts: Optional[List[float]] = None
 
+    # close_on_opposite: ha True, az on_tick MINDIG fut (nyitott pozíció közben is),
+    # és ha ellentétes irányú allow_trade=True decision érkezik, az összes ellentétes
+    # nyitott pozíció ZÁRUL az aktuális bid/ask-on (exit_reason=OPPOSITE_SIGNAL).
+    # Új pozíciót ugyanezen a ticken nem nyitunk (csak zárunk, nem flip).
+    # Default False → régi viselkedés.
+    close_on_opposite: bool = False
+
 
 # Optuna számára: stringből választható preset-ek a tp_layers-hez.
 TP_LAYERS_PRESETS = {
@@ -192,8 +199,10 @@ class BacktestRunner:
 
             # Signal-szintű limit: az `open_positions` réteg-pozíciókat tartalmaz, de a
             # max_open_positions logikai signal-okra vonatkozik (egy signal = N réteg).
+            # close_on_opposite=True esetén az on_tick-et akkor is meghívjuk, ha
+            # max_open elérve — mert a decision alapján zárhatunk ellentétes pozíciót.
             open_signal_count = len({p.parent_trade_id or p.id for p in open_positions})
-            if open_signal_count >= self.cfg.max_open_positions:
+            if open_signal_count >= self.cfg.max_open_positions and not self.cfg.close_on_opposite:
                 continue
 
             decision = self.strategy.on_tick(ts, bid, ask)
@@ -215,6 +224,23 @@ class BacktestRunner:
             })
 
             if not decision.allow_trade or decision.direction is None or not decision.size:
+                continue
+
+            # close_on_opposite: allow_trade=True + ellentétes irányú nyitott →
+            # zárjuk az ellentéteseket az aktuális ticken, és NEM nyitunk újat.
+            if self.cfg.close_on_opposite and open_positions:
+                opposite = [p for p in open_positions if p.direction != decision.direction]
+                if opposite:
+                    for pos in opposite:
+                        exit_price = bid if pos.direction == "BUY" else ask
+                        self._close_position(pos, exit_price, ts, "OPPOSITE_SIGNAL")
+                    open_positions = [p for p in open_positions if p.direction == decision.direction]
+                    continue
+
+            # A közeli max_open-check (close_on_opposite=True path esetére, hogy
+            # zárás nélkül azonos irányú signal ne toljon többet a max_open fölé).
+            open_signal_count = len({p.parent_trade_id or p.id for p in open_positions})
+            if open_signal_count >= self.cfg.max_open_positions:
                 continue
 
             # allow_multiple_directions: ha False, akkor BUY és SELL nem lehet

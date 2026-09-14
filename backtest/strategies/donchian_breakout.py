@@ -46,6 +46,11 @@ class DonchianBreakout(Strategy):
         # Cooldown re-entry ellen
         self.cooldown_bars: int = int(p.get("cooldown_bars", 5))
 
+        # Belépési órák whitelistje (UTC). Ha None, minden óra engedélyezett.
+        # Pl. [0,1,7,8,10,11,12,13,14,15,18,19,20] → csak ezekben az órákban léphet be.
+        eha = p.get("entry_hours_allowed")
+        self.entry_hours_allowed: Optional[set] = set(int(x) for x in eha) if eha else None
+
         # Equity-curve filter: K egymás utáni VALÓS veszteség után papír-módba
         # vált (a signalok papíron szimulálódnak, éles nyitás nincs), és az
         # első papír-NYERTES után tér vissza élesbe. A stratégia maga a saját
@@ -153,6 +158,8 @@ class DonchianBreakout(Strategy):
     def on_tick(self, ts: pd.Timestamp, bid: float, ask: float) -> Optional[Decision]:
         if self._paper_pos is not None:
             self._paper_update(ts, bid, ask)
+        if self.entry_hours_allowed is not None and ts.hour not in self.entry_hours_allowed:
+            return None
         ts_np = ts.to_datetime64()
         i = int(np.searchsorted(self._ltf_close_ts, ts_np, side="right") - 1)
         if i < self.donchian_period + self.atr_period:

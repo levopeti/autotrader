@@ -37,6 +37,13 @@ class LondonBreakout(Strategy):
         self.trend_ema: int = int(p.get("trend_ema", 20))
         self.trend_filter_enabled: bool = bool(p.get("trend_filter_enabled", True))
         self.min_asia_bars: int = int(p.get("min_asia_bars", 6))
+        # Belépési órák whitelistje (UTC). Ha None, minden asia_end_hour..entry_end_hour
+        # közötti óra engedélyezett. Pl. [7,9,10,11,12] → hour 8 kizárva.
+        eha = p.get("entry_hours_allowed")
+        self.entry_hours_allowed: Optional[set] = set(int(x) for x in eha) if eha else None
+        # TP-t a napi range (dATR) többszöröseként; None → nincs TP (default).
+        # Csak akkor van értelme, ha tp_layers is konfigurált (partial-TP).
+        self.tp_datr_mult: Optional[float] = p.get("tp_datr_mult")
 
         self._asia_hi: Dict = {}
         self._asia_lo: Dict = {}
@@ -81,6 +88,8 @@ class LondonBreakout(Strategy):
     def on_tick(self, ts: pd.Timestamp, bid: float, ask: float) -> Optional[Decision]:
         h = ts.hour
         if not (self.asia_end_hour <= h < self.entry_end_hour):
+            return None
+        if self.entry_hours_allowed is not None and h not in self.entry_hours_allowed:
             return None
         d = ts.date()
         if self._last_trade_date == d:
@@ -129,10 +138,11 @@ class LondonBreakout(Strategy):
 
         self._last_trade_date = d
         exit_at = pd.Timestamp(d) + pd.Timedelta(hours=self.session_close_hour)
+        tp_dist = float(self.tp_datr_mult * datr) if self.tp_datr_mult else None
         return Decision(
             ts=ts, allow_trade=True, reason="london_breakout",
             direction=direction, score=1.0, size=1.0,
-            sl_distance=sl_dist, tp_distance=None,
+            sl_distance=sl_dist, tp_distance=tp_dist,
             exit_at_ts=exit_at,
             indicators={
                 "asia_hi": hi, "asia_lo": lo, "asia_range": rng,

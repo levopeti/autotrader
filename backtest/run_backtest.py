@@ -58,6 +58,7 @@ def build_engine_cfg(cfg: dict, epic_override: str | None) -> EngineConfig:
         equity=e.get("equity", 10000.0),
         tp_layers=e.get("tp_layers"),
         tp_layer_size_pcts=e.get("tp_layer_size_pcts"),
+        close_on_opposite=bool(e.get("close_on_opposite", False)),
     )
 
 
