@@ -235,6 +235,10 @@ class CapitalClient:
         while True:
             try:
                 self.ensure_login()
+                # A stream-újralépéskor a session preferred account-ra ragadhat
+                # (a REST 200-t ad, így a _request 401-branch-je nem tüzel) —
+                # kényszerítjük a helyes account-ot minden reconnect után.
+                self.ensure_account()
                 async with websockets.connect(WS_URL, ping_interval=20, ping_timeout=20) as ws:
                     await ws.send(json.dumps({
                         "destination": "marketData.subscribe",
