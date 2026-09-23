@@ -91,14 +91,18 @@ PER_CHANNEL_RULES: dict[int, RecipeRules] = {
     # Uniform tp_idx=2 (3. legközelebbi TP), közös 4h trend filter, news filter off.
     #
     # VIP: tp_idx=2 = 3. legközelebbi (VIP általában 6 TP-t küld).
+    # news_blocked_hours=[[0,4]]: 2026-09-23 live audit szerint 90 nap alatt
+    # a 0-3 UTC blokk 182 tr WR 24% -$601 volt, ami ≈ a teljes 90d vesztés
+    # (-$585). Regime-független Ázsia-hajnal fake breakout — kizárva.
     CH_VIP:     RecipeRules(tp_idx_only=2, expected_tp_count=6,
                             trend_filter=True,
-                            news_blocked_hours=[]),   # explicit no news filter
+                            news_blocked_hours=[[0, 4]]),
     # Traderz: tp_idx=2 = 3. legközelebbi (Traderz 5 TP-t küld).
     # LADDER KIKAPCSOLVA — a combo_2 uniform tp_idx=2 esetén nem kell.
+    # news_blocked_hours=[[0,4]]: ld. VIP magyarázat fent.
     CH_TRADERZ: RecipeRules(tp_idx_only=2, expected_tp_count=5,
                             trend_filter=True,
-                            news_blocked_hours=[]),   # explicit no news filter
+                            news_blocked_hours=[[0, 4]]),
     # ── 2026-09-09 ANN VISSZAKAPCSOLVA külön regime-robusztus recepttel.
     # Sweep 120d: tp=0, trend=off, news=[[8,16]], ATR-override → +$117 total,
     # 57% WR, PF 1.96, minden regime pozitív (BULL+$20 / BEAR+$27 / SIDE+$71).
